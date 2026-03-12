@@ -248,6 +248,62 @@ input[type="checkbox"] {
   font-weight: 800;
 }
 
+/* ===== SELECTBOX (AUTO) ===== */
+
+div[data-baseweb="select"] {
+    background: rgba(255,255,255,0.08) !important;
+    border: 1px solid rgba(255,255,255,0.15) !important;
+    color: #f2eaff !important;
+}
+
+div[data-baseweb="select"] span {
+    color: #f2eaff !important;
+}
+
+
+/* ===== BOTON BROWSE FILES ===== */
+
+button[kind="secondary"] {
+    background: rgba(255,255,255,0.08) !important;
+    color: #ffffff !important;
+    border: 1px solid rgba(255,255,255,0.15) !important;
+}
+
+button[kind="secondary"]:hover {
+    background: rgba(255,255,255,0.15) !important;
+}
+
+
+/* ===== DROPZONE UPLOADER ===== */
+
+[data-testid="stFileUploaderDropzone"] button {
+    background: rgba(255,255,255,0.08) !important;
+    color: #ffffff !important;
+    border: 1px solid rgba(255,255,255,0.15) !important;
+}
+
+
+/* ===== BOTON DESCARGAR EXCEL ===== */
+
+.stDownloadButton button {
+    background: linear-gradient(90deg,#ff3ea5,#ff7a5f 45%,#ffc53d 95%) !important;
+    color: #1c102d !important;
+    font-weight: 700 !important;
+    border-radius: 12px !important;
+    border: none !important;
+}
+
+.stDownloadButton button:hover {
+    filter: brightness(1.05);
+}
+
+
+/* ===== TEXTO DE BOTONES ===== */
+
+button span {
+    color: inherit !important;
+}
+
 </style>
 """, unsafe_allow_html=True)
 st.markdown("""
@@ -1227,4 +1283,5 @@ st.markdown("""
   </div>
 </div>
 """, unsafe_allow_html=True)
+
 
