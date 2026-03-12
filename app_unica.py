@@ -31,36 +31,28 @@ from parsers.bbva import parse_pdf as parse_bbva  # BBVA usa motor original 1:1
 from parsers.brubank import parse_pdf as parse_brubank
 
 # ====== UI ======
-st.set_page_config(page_title="Extrac-Tete · Convertidor de Extractos", page_icon="💳", layout="wide")
+st.set_page_config(
+    page_title="Extrac-Tete · Convertidor de Extractos",
+    page_icon="💳",
+    layout="wide",
+)
+
 st.markdown("""
 <style>
-
 /* ===== Labels más visibles ===== */
-
 label {
     color: #f2eaff !important;
     font-weight: 500;
 }
 
-.stCheckbox label {
-    color: #f2eaff !important;
-}
-
-.stCheckbox p {
+.stCheckbox label,
+.stCheckbox p,
+.stSelectbox label,
+[data-testid="stFileUploader"] label {
     color: #f2eaff !important;
 }
 
 [data-testid="stMarkdownContainer"] p {
-    color: #f2eaff !important;
-}
-
-/* Texto de selectbox */
-.stSelectbox label {
-    color: #f2eaff !important;
-}
-
-/* Texto del uploader */
-[data-testid="stFileUploader"] label {
     color: #f2eaff !important;
 }
 
@@ -70,186 +62,109 @@ header {visibility: hidden;}
 footer {visibility: hidden;}
 
 [data-testid="stHeader"] {
-  background: transparent !important;
+    background: transparent !important;
 }
 
 [data-testid="stToolbar"] {
-  display: none !important;
+    display: none !important;
 }
 
 /* ===== Variables ===== */
 :root {
-  --bg1:#0f071c;
-  --bg2:#1a0f2b;
-  --ink:#e9dff9;
-  --muted:#b8a9d9;
-  --card:rgba(255,255,255,.05);
-  --stroke:rgba(255,255,255,.08);
-  --accent1:#ff3ea5;
-  --accent2:#ffc53d;
-  --accent3:#9b5cff;
+    --bg1:#0f071c;
+    --bg2:#1a0f2b;
+    --ink:#e9dff9;
+    --muted:#b8a9d9;
+    --card:rgba(255,255,255,.05);
+    --stroke:rgba(255,255,255,.08);
+    --accent1:#ff3ea5;
+    --accent2:#ffc53d;
+    --accent3:#9b5cff;
 }
 
 /* ===== Fondo general ===== */
 html, body, .stApp {
-  background:
-    radial-gradient(1200px 600px at 20% -10%, #1b1030 0%, var(--bg1) 35%),
-    radial-gradient(1400px 800px at 90% -20%, #281343 0%, var(--bg1) 40%),
-    var(--bg1) !important;
-  color: var(--ink);
-  font-weight: 500;
+    background:
+        radial-gradient(1200px 600px at 20% -10%, #1b1030 0%, var(--bg1) 35%),
+        radial-gradient(1400px 800px at 90% -20%, #281343 0%, var(--bg1) 40%),
+        var(--bg1) !important;
+    color: var(--ink);
+    font-weight: 500;
 }
 
 .block-container {
-  padding-top: 24px;
-  max-width: 1100px;
+    padding-top: 24px;
+    max-width: 1100px;
 }
 
 /* ===== Hero ===== */
 .h-hero {
-  display:flex;
-  align-items:center;
-  gap:14px;
-  margin: 10px 0 12px 0;
-  overflow: visible;
+    display:flex;
+    align-items:center;
+    gap:14px;
+    margin: 10px 0 12px 0;
+    overflow: visible;
 }
 
 .logo-pill {
-  width:58px;
-  height:58px;
-  border-radius:16px;
-  background: linear-gradient(180deg,#2b164a,#1b0f2c);
-  border:1px solid var(--stroke);
-  display:flex;
-  align-items:center;
-  justify-content:center;
-  box-shadow: 0 8px 24px rgba(0,0,0,.35), inset 0 0 0 1px rgba(255,255,255,.04);
-  font-size:28px;
+    width:58px;
+    height:58px;
+    border-radius:16px;
+    background: linear-gradient(180deg,#2b164a,#1b0f2c);
+    border:1px solid var(--stroke);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    box-shadow: 0 8px 24px rgba(0,0,0,.35), inset 0 0 0 1px rgba(255,255,255,.04);
+    font-size:28px;
 }
 
 .h-title {
-  font-size:46px;
-  line-height:1.05;
-  margin:0;
-  padding-top:6px;
-  letter-spacing:.5px;
-  background: linear-gradient(90deg,#ff3ea5,#ff8a56 35%,#ffc53d 70%);
-  -webkit-background-clip:text;
-  background-clip:text;
-  -webkit-text-fill-color:transparent;
-  font-weight:800;
-  display:inline-block;
-  overflow:visible;
+    font-size:46px;
+    line-height:1.05;
+    margin:0;
+    padding-top:6px;
+    letter-spacing:.5px;
+    background: linear-gradient(90deg,#ff3ea5,#ff8a56 35%,#ffc53d 70%);
+    -webkit-background-clip:text;
+    background-clip:text;
+    -webkit-text-fill-color:transparent;
+    font-weight:800;
+    display:inline-block;
+    overflow:visible;
 }
 
 .h-sub {
-  font-size:20px;
-  opacity:.9;
-  margin: 2px 0 10px 0;
-  color:#cbb6f3;
+    font-size:20px;
+    opacity:.9;
+    margin: 2px 0 10px 0;
+    color:#cbb6f3;
 }
 
 .h-note {
-  font-size:14px;
-  opacity:.75;
-  margin-bottom:14px;
+    font-size:14px;
+    opacity:.75;
+    margin-bottom:14px;
 }
 
 /* ===== Card ===== */
 .card {
-  border:1px solid var(--stroke);
-  background: var(--card);
-  border-radius: 16px;
-  padding: 18px 16px 8px 16px;
-  box-shadow: 0 10px 30px rgba(0,0,0,.35), inset 0 0 0 1px rgba(255,255,255,.02);
+    border:1px solid var(--stroke);
+    background: var(--card);
+    border-radius: 16px;
+    padding: 18px 16px 8px 16px;
+    box-shadow: 0 10px 30px rgba(0,0,0,.35), inset 0 0 0 1px rgba(255,255,255,.02);
 }
 
-/* ===== Inputs ===== */
+/* ===== Inputs base ===== */
 .stSelectbox > div > div,
 .stFileUploader > div {
-  background: rgba(255,255,255,.06);
-  border: 1px solid rgba(255,255,255,.1);
-  border-radius: 12px;
+    background: rgba(255,255,255,.06);
+    border: 1px solid rgba(255,255,255,.1);
+    border-radius: 12px;
 }
 
-/* ===== Uploader oscuro ===== */
-[data-testid="stFileUploaderDropzone"] {
-  background: rgba(255,255,255,.05) !important;
-  border: 2px dashed rgba(255,255,255,.15) !important;
-  border-radius: 14px !important;
-  color: white !important;
-}
-
-[data-testid="stFileUploaderDropzone"] * {
-  color: #e9dff9 !important;
-}
-
-.stFileUploader section {
-  background: transparent !important;
-}
-
-/* ===== Checkboxes ===== */
-.stCheckbox > label,
-.stCheckbox > div > label {
-  color: var(--ink) !important;
-}
-
-input[type="checkbox"] {
-  accent-color: var(--accent3);
-}
-
-/* ===== Tabs ===== */
-.stTabs [data-baseweb="tab"] {
-  color: var(--muted);
-  font-weight: 600;
-}
-
-.stTabs [data-baseweb="tab"][aria-selected="true"] {
-  color: var(--ink);
-  border-bottom: 2px solid var(--accent1);
-}
-
-/* ===== Botones ===== */
-.stButton > button {
-  height: 48px;
-  font-weight: 800;
-  border-radius: 12px;
-  background: linear-gradient(90deg,var(--accent1), #ff7a5f 45%, var(--accent2) 95%);
-  color: #1c102d;
-  border: none;
-  box-shadow: 0 10px 28px rgba(255,62,165,.35);
-}
-
-.stButton > button:hover {
-  filter: brightness(1.03);
-  transform: translateY(-0.5px);
-}
-
-/* ===== Dataframes ===== */
-.stDataFrame {
-  border-radius: 12px;
-  overflow: hidden;
-}
-
-/* ===== Autor ===== */
-.author {
-  display:flex;
-  justify-content:flex-end;
-  margin-top: 10px;
-}
-
-.author .tiny {
-  font-size: 12px;
-  opacity:.9;
-  text-align:center;
-}
-
-.author .name {
-  font-weight: 800;
-}
-
-/* ===== SELECTBOX BANCO ===== */
-
+/* ===== Selectbox banco ===== */
 .stSelectbox div[data-baseweb="select"] {
     background: rgba(255,255,255,0.06) !important;
     border-radius: 12px !important;
@@ -263,9 +178,23 @@ input[type="checkbox"] {
     fill: #cbb6f3 !important;
 }
 
+/* ===== Uploader oscuro ===== */
+[data-testid="stFileUploaderDropzone"] {
+    background: rgba(255,255,255,.05) !important;
+    border: 2px dashed rgba(255,255,255,.15) !important;
+    border-radius: 14px !important;
+    color: white !important;
+}
 
-/* ===== BOTON BROWSE FILES ===== */
+[data-testid="stFileUploaderDropzone"] * {
+    color: #e9dff9 !important;
+}
 
+.stFileUploader section {
+    background: transparent !important;
+}
+
+/* ===== Botón Browse files ===== */
 button[kind="secondary"] {
     background: rgba(255,255,255,0.08) !important;
     color: #ffffff !important;
@@ -276,18 +205,54 @@ button[kind="secondary"]:hover {
     background: rgba(255,255,255,0.15) !important;
 }
 
-
-/* ===== DROPZONE UPLOADER ===== */
-
 [data-testid="stFileUploaderDropzone"] button {
     background: rgba(255,255,255,0.08) !important;
     color: #ffffff !important;
     border: 1px solid rgba(255,255,255,0.15) !important;
 }
 
+button span {
+    color: inherit !important;
+}
 
-/* ===== BOTON DESCARGAR EXCEL ===== */
+/* ===== Checkboxes ===== */
+.stCheckbox > label,
+.stCheckbox > div > label {
+    color: var(--ink) !important;
+}
 
+input[type="checkbox"] {
+    accent-color: var(--accent3);
+}
+
+/* ===== Tabs ===== */
+.stTabs [data-baseweb="tab"] {
+    color: var(--muted);
+    font-weight: 600;
+}
+
+.stTabs [data-baseweb="tab"][aria-selected="true"] {
+    color: var(--ink);
+    border-bottom: 2px solid var(--accent1);
+}
+
+/* ===== Botones primarios ===== */
+.stButton > button {
+    height: 48px;
+    font-weight: 800;
+    border-radius: 12px;
+    background: linear-gradient(90deg,var(--accent1), #ff7a5f 45%, var(--accent2) 95%);
+    color: #1c102d;
+    border: none;
+    box-shadow: 0 10px 28px rgba(255,62,165,.35);
+}
+
+.stButton > button:hover {
+    filter: brightness(1.03);
+    transform: translateY(-0.5px);
+}
+
+/* ===== Botón descargar ===== */
 .stDownloadButton button {
     background: linear-gradient(90deg,#ff3ea5,#ff7a5f 45%,#ffc53d 95%) !important;
     color: #1c102d !important;
@@ -300,15 +265,74 @@ button[kind="secondary"]:hover {
     filter: brightness(1.05);
 }
 
-
-/* ===== TEXTO DE BOTONES ===== */
-
-button span {
-    color: inherit !important;
+/* ===== Dataframes ===== */
+.stDataFrame {
+    border-radius: 12px;
+    overflow: hidden;
 }
 
+/* ===== Progreso ===== */
+.progress-wrap {
+    margin: 10px 0 18px 0;
+    padding: 12px 14px;
+    border: 1px solid rgba(255,255,255,.08);
+    background: rgba(255,255,255,.04);
+    border-radius: 14px;
+}
+
+.progress-label {
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    font-size:14px;
+    color:#f2eaff;
+    margin-bottom:8px;
+}
+
+.progress-track {
+    width:100%;
+    height:12px;
+    background: rgba(255,255,255,.08);
+    border-radius:999px;
+    overflow:hidden;
+    box-shadow: inset 0 1px 2px rgba(0,0,0,.25);
+}
+
+.progress-fill {
+    height:100%;
+    width:0%;
+    border-radius:999px;
+    background: linear-gradient(90deg,#ff3ea5,#ff7a5f 45%,#ffc53d 95%);
+    transition: width .25s ease;
+    box-shadow: 0 0 14px rgba(255,62,165,.35);
+}
+
+.progress-sub {
+    margin-top:8px;
+    font-size:13px;
+    color:#cbb6f3;
+    opacity:.95;
+}
+
+/* ===== Autor ===== */
+.author {
+    display:flex;
+    justify-content:flex-end;
+    margin-top: 10px;
+}
+
+.author .tiny {
+    font-size: 12px;
+    opacity:.9;
+    text-align:center;
+}
+
+.author .name {
+    font-weight: 800;
+}
 </style>
 """, unsafe_allow_html=True)
+
 st.markdown("""
 <div class="h-hero">
     <div class="logo-pill">💳</div>
@@ -451,10 +475,7 @@ def _classify_row(bank: str, descripcion: str, debito: float, credito: float, ru
             bank_candidates.append(rule)
 
     if bank_candidates:
-        bank_candidates = sorted(
-            bank_candidates,
-            key=lambda r: (-r["priority_len"], r["order"])
-        )
+        bank_candidates = sorted(bank_candidates, key=lambda r: (-r["priority_len"], r["order"]))
         return bank_candidates[0]["clasificacion"]
 
     general_candidates = []
@@ -471,10 +492,7 @@ def _classify_row(bank: str, descripcion: str, debito: float, credito: float, ru
         general_candidates.append(rule)
 
     if general_candidates:
-        general_candidates = sorted(
-            general_candidates,
-            key=lambda r: (-r["priority_len"], r["order"])
-        )
+        general_candidates = sorted(general_candidates, key=lambda r: (-r["priority_len"], r["order"]))
         return general_candidates[0]["clasificacion"]
 
     return "SIN CLASIFICAR"
@@ -698,37 +716,26 @@ def detect_bank(raw_bytes: bytes) -> Optional[str]:
 
     if "BRUBANK" in txt and "MI CUENTA" in txt and "MOVIMIENTOS" in txt:
         return "BRUBANK"
-
     if "MERCADO PAGO" in txt or "MERCADOPAGO" in txt:
         return "MERCADO PAGO"
-
     if "BBVA" in txt and ("MOVIMIENTOS" in txt or "CUENTA" in txt):
         return "BBVA"
-
     if "BANCO GALICIA" in txt or ("GALICIA" in txt and "TOTAL" in txt):
         return "GALICIA"
-
     if "ICBC" in txt:
         return "ICBC"
-
     if "CREDICOOP" in txt:
         return "CREDICOOP"
-
     if "BANCO PATAGONIA" in txt or ("PATAGONIA" in txt and "SALDO ANTERIOR" in txt):
         return "PATAGONIA"
-
     if "BANCO DE LA NACION ARGENTINA" in txt or "BANCO NACION" in txt:
         return "NACION"
-
     if "SANTANDER" in txt or "SANTANDER RIO" in txt:
         return "SANTANDER RIO"
-
     if "SUPERVIELLE" in txt:
         return "SUPERVIELLE"
-
     if "BANCOR" in txt or "BANCO DE CORDOBA" in txt or "BANCO DE CÓRDOBA" in txt:
         return "BANCOR"
-
     if "BANCO MACRO" in txt or re.search(r"\bMACRO\b", txt):
         if "NRO. DE REFERENCIA" in txt and "CAUSAL" in txt and "IMPORTE" in txt:
             return "MACRO 2"
@@ -775,8 +782,8 @@ def fix_patagonia(df):
 
         desc = chunk["Descripción"].astype(str).str.strip().str.upper()
         chunk = chunk[
-            (desc != "SALDO INICIAL") &
-            (~desc.str.contains("SALDO ACTUAL", na=False))
+            (desc != "SALDO INICIAL")
+            & (~desc.str.contains("SALDO ACTUAL", na=False))
         ].reset_index(drop=True)
 
         out.append(chunk)
@@ -864,7 +871,7 @@ FIXES: Dict[str, Callable[[pd.DataFrame], pd.DataFrame]] = {
     "BRUBANK": fix_brubank,
 }
 
-MULTISHEET_BANKS = {"SUPERVIELLE", "BBVA", "PATAGONIA", "BRUBANK"}  # multi-hoja por cuenta
+MULTISHEET_BANKS = {"SUPERVIELLE", "BBVA", "PATAGONIA", "BRUBANK"}
 
 # ===== UI principal =====
 card = st.container()
@@ -881,8 +888,8 @@ files = st.file_uploader(
     "Subí uno o varios PDF del banco seleccionado",
     type=["pdf"],
     accept_multiple_files=True,
-    max_upload_size=80,
 )
+
 MAX_FILES = 20
 MAX_TOTAL_MB = 300
 MAX_FILE_MB_APP = 80
@@ -904,14 +911,13 @@ if files:
             too_big.append(f"{f.name} ({file_mb:.1f} MB)")
 
     if too_big:
-        st.error(
-            "Estos archivos superan el límite permitido:\n\n- " + "\n- ".join(too_big)
-        )
+        st.error("Estos archivos superan el límite permitido:\n\n- " + "\n- ".join(too_big))
         st.stop()
 
 add_header = st.checkbox("Encabezado con nombre de archivo", value=True)
 add_blank = st.checkbox("Línea en blanco entre archivos", value=True)
 do_classification = st.checkbox("Hacer Clasificacion", value=True)
+
 with st.expander("Opciones avanzadas", expanded=False):
     long_mode = st.toggle(
         "Modo LARGO (100+ páginas / miles de líneas)",
@@ -944,15 +950,44 @@ def _append_blocks(chunks: List[pd.DataFrame]):
         return pd.DataFrame(columns=EXPECTED_COLS)
     return pd.concat(chunks, ignore_index=True)
 
+def _render_progress(box, current: int, total: int, label: str, sublabel: str = ""):
+    pct = 0 if total <= 0 else int((current / total) * 100)
+    box.markdown(
+        f"""
+        <div class="progress-wrap">
+            <div class="progress-label">
+                <span>{label}</span>
+                <span>{pct}%</span>
+            </div>
+            <div class="progress-track">
+                <div class="progress-fill" style="width:{pct}%;"></div>
+            </div>
+            <div class="progress-sub">{sublabel}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
 if do_convert:
     if not files:
         st.warning("Subí al menos un PDF.")
     else:
+        progress_box = st.empty()
+
         inputs: List[Tuple[str, bytes, str]] = []
         for f in files:
             data = f.read()
             inputs.append((f.name, data, _bytes_hash(data)))
         inputs.sort(key=lambda x: x[0])
+
+        total_inputs = len(inputs)
+        _render_progress(
+            progress_box,
+            current=0,
+            total=total_inputs,
+            label="Preparando conversión",
+            sublabel=f"Se detectaron {total_inputs} archivo(s) para procesar.",
+        )
 
         if long_mode:
             timeouts = {
@@ -1037,8 +1072,16 @@ if do_convert:
         errors = []
 
         if max_workers == 1:
-            for name, data, _h in inputs:
+            for idx, (name, data, _h) in enumerate(inputs, start=1):
                 try:
+                    _render_progress(
+                        progress_box,
+                        current=idx - 1,
+                        total=total_inputs,
+                        label="Procesando archivos",
+                        sublabel=f"Procesando {idx}/{total_inputs}: {name}",
+                    )
+
                     if bank == "AUTO":
                         provisional_bank = detect_bank(data)
                         if not provisional_bank:
@@ -1050,6 +1093,15 @@ if do_convert:
                     fin, detected_bank = process_one(name, data, timeout_sec)
                     mind = _df_min_date(fin)
                     items.append((name, fin, mind, detected_bank))
+
+                    _render_progress(
+                        progress_box,
+                        current=idx,
+                        total=total_inputs,
+                        label="Procesando archivos",
+                        sublabel=f"Completado {idx}/{total_inputs}: {name}",
+                    )
+
                 except TimeoutError:
                     msg = f"{name}: tiempo de procesamiento excedido"
                     errors.append(msg)
@@ -1088,11 +1140,20 @@ if do_convert:
 
                 tmp = {}
                 failed = False
+                done_count = 0
 
                 for fut in as_completed(fut_map):
                     name, data = fut_map[fut]
                     try:
                         tmp[name] = fut.result()
+                        done_count += 1
+                        _render_progress(
+                            progress_box,
+                            current=done_count,
+                            total=total_inputs,
+                            label="Procesando archivos",
+                            sublabel=f"Completado {done_count}/{total_inputs}: {name}",
+                        )
                     except TE:
                         msg = f"{name}: tiempo de procesamiento excedido"
                         errors.append(msg)
@@ -1116,11 +1177,20 @@ if do_convert:
                         items.append((name, fin, mind, detected_bank))
 
         if errors and atomic_mode:
+            progress_box.empty()
             tab_log.error("Se canceló la generación del Excel (modo atómico activo).")
             for e in errors:
                 tab_log.write("• " + e)
 
         elif items:
+            _render_progress(
+                progress_box,
+                current=total_inputs,
+                total=total_inputs,
+                label="Finalizando",
+                sublabel="Armando vista previa y archivo Excel...",
+            )
+
             sortable = []
             for name, fin, mind, detected_bank in items:
                 if pd.isna(mind):
@@ -1214,7 +1284,6 @@ if do_convert:
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         use_container_width=True,
                     )
-
             else:
                 chunks = []
 
@@ -1286,6 +1355,7 @@ st.markdown("""
   </div>
 </div>
 """, unsafe_allow_html=True)
+
 
 
 
