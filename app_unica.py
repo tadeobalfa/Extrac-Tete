@@ -31,52 +31,195 @@ from parsers.bbva import parse_pdf as parse_bbva  # BBVA usa motor original 1:1
 from parsers.brubank import parse_pdf as parse_brubank
 
 # ====== UI ======
-st.set_page_config(page_title="Extrac-Tete · Convertidor de Extractos", page_icon="🧾", layout="wide")
+st.set_page_config(page_title="Extrac-Tete · Convertidor de Extractos", page_icon="💳", layout="wide")
 st.markdown("""
 <style>
-:root { --bg1:#0f071c; --bg2:#1a0f2b; --ink:#e9dff9; --muted:#b8a9d9; --card:rgba(255,255,255,.05);
-        --stroke:rgba(255,255,255,.08); --accent1:#ff3ea5; --accent2:#ffc53d; --accent3:#9b5cff; }
-html, body, .stApp {
-  background: radial-gradient(1200px 600px at 20% -10%, #1b1030 0%, var(--bg1) 35%),
-              radial-gradient(1400px 800px at 90% -20%, #281343 0%, var(--bg1) 40%),
-              var(--bg1) !important;
-  color: var(--ink); font-weight: 500;
+
+/* ===== Ocultar barra superior de Streamlit ===== */
+header {visibility: hidden;}
+#MainMenu {visibility: hidden;}
+footer {visibility: hidden;}
+
+[data-testid="stHeader"] {
+  background: transparent !important;
 }
-.block-container { padding-top: 24px; max-width: 1100px; }
-.h-hero { display:flex; align-items:center; gap:14px; margin: 10px 0 12px 0; overflow: visible; }
-.logo-pill { width:58px; height:58px; border-radius:16px; background: linear-gradient(180deg,#2b164a,#1b0f2c);
-  border:1px solid var(--stroke); display:flex; align-items:center; justify-content:center;
-  box-shadow: 0 8px 24px rgba(0,0,0,.35), inset 0 0 0 1px rgba(255,255,255,.04); font-size:28px; }
-.h-title { font-size:46px; line-height:1.05; margin:0; padding-top:6px; letter-spacing:.5px;
-  background: linear-gradient(90deg,#ff3ea5,#ff8a56 35%,#ffc53d 70%); -webkit-background-clip:text;
-  background-clip:text; -webkit-text-fill-color:transparent; font-weight:800; display:inline-block; overflow:visible; }
-.h-sub { font-size:20px; opacity:.9; margin: 2px 0 10px 0; color:#cbb6f3; }
-.h-note { font-size:14px; opacity:.75; margin-bottom:14px; }
-.card { border:1px solid var(--stroke); background: var(--card); border-radius: 16px; padding: 18px 16px 8px 16px;
-  box-shadow: 0 10px 30px rgba(0,0,0,.35), inset 0 0 0 1px rgba(255,255,255,.02); }
-.stSelectbox > div > div, .stFileUploader > div { background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.1); border-radius: 12px; }
-.stFileUploader .upload-dropzone { background: rgba(255,255,255,.04) !important; border: 1px dashed rgba(255,255,255,.16) !important; }
-.stCheckbox > label, .stCheckbox > div > label { color: var(--ink) !important; } input[type="checkbox"] { accent-color: var(--accent3); }
-.stTabs [data-baseweb="tab"] { color: var(--muted); font-weight: 600; }
-.stTabs [data-baseweb="tab"][aria-selected="true"] { color: var(--ink); border-bottom: 2px solid var(--accent1); }
-.stButton > button { height: 48px; font-weight: 800; border-radius: 12px;
+
+[data-testid="stToolbar"] {
+  display: none !important;
+}
+
+/* ===== Variables ===== */
+:root {
+  --bg1:#0f071c;
+  --bg2:#1a0f2b;
+  --ink:#e9dff9;
+  --muted:#b8a9d9;
+  --card:rgba(255,255,255,.05);
+  --stroke:rgba(255,255,255,.08);
+  --accent1:#ff3ea5;
+  --accent2:#ffc53d;
+  --accent3:#9b5cff;
+}
+
+/* ===== Fondo general ===== */
+html, body, .stApp {
+  background:
+    radial-gradient(1200px 600px at 20% -10%, #1b1030 0%, var(--bg1) 35%),
+    radial-gradient(1400px 800px at 90% -20%, #281343 0%, var(--bg1) 40%),
+    var(--bg1) !important;
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.block-container {
+  padding-top: 24px;
+  max-width: 1100px;
+}
+
+/* ===== Hero ===== */
+.h-hero {
+  display:flex;
+  align-items:center;
+  gap:14px;
+  margin: 10px 0 12px 0;
+  overflow: visible;
+}
+
+.logo-pill {
+  width:58px;
+  height:58px;
+  border-radius:16px;
+  background: linear-gradient(180deg,#2b164a,#1b0f2c);
+  border:1px solid var(--stroke);
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  box-shadow: 0 8px 24px rgba(0,0,0,.35), inset 0 0 0 1px rgba(255,255,255,.04);
+  font-size:28px;
+}
+
+.h-title {
+  font-size:46px;
+  line-height:1.05;
+  margin:0;
+  padding-top:6px;
+  letter-spacing:.5px;
+  background: linear-gradient(90deg,#ff3ea5,#ff8a56 35%,#ffc53d 70%);
+  -webkit-background-clip:text;
+  background-clip:text;
+  -webkit-text-fill-color:transparent;
+  font-weight:800;
+  display:inline-block;
+  overflow:visible;
+}
+
+.h-sub {
+  font-size:20px;
+  opacity:.9;
+  margin: 2px 0 10px 0;
+  color:#cbb6f3;
+}
+
+.h-note {
+  font-size:14px;
+  opacity:.75;
+  margin-bottom:14px;
+}
+
+/* ===== Card ===== */
+.card {
+  border:1px solid var(--stroke);
+  background: var(--card);
+  border-radius: 16px;
+  padding: 18px 16px 8px 16px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.35), inset 0 0 0 1px rgba(255,255,255,.02);
+}
+
+/* ===== Inputs ===== */
+.stSelectbox > div > div,
+.stFileUploader > div {
+  background: rgba(255,255,255,.06);
+  border: 1px solid rgba(255,255,255,.1);
+  border-radius: 12px;
+}
+
+/* ===== Uploader oscuro ===== */
+[data-testid="stFileUploaderDropzone"] {
+  background: rgba(255,255,255,.05) !important;
+  border: 2px dashed rgba(255,255,255,.15) !important;
+  border-radius: 14px !important;
+  color: white !important;
+}
+
+[data-testid="stFileUploaderDropzone"] * {
+  color: #e9dff9 !important;
+}
+
+.stFileUploader section {
+  background: transparent !important;
+}
+
+/* ===== Checkboxes ===== */
+.stCheckbox > label,
+.stCheckbox > div > label {
+  color: var(--ink) !important;
+}
+
+input[type="checkbox"] {
+  accent-color: var(--accent3);
+}
+
+/* ===== Tabs ===== */
+.stTabs [data-baseweb="tab"] {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.stTabs [data-baseweb="tab"][aria-selected="true"] {
+  color: var(--ink);
+  border-bottom: 2px solid var(--accent1);
+}
+
+/* ===== Botones ===== */
+.stButton > button {
+  height: 48px;
+  font-weight: 800;
+  border-radius: 12px;
   background: linear-gradient(90deg,var(--accent1), #ff7a5f 45%, var(--accent2) 95%);
-  color: #1c102d; border: none; box-shadow: 0 10px 28px rgba(255,62,165,.35); }
-.stButton > button:hover { filter: brightness(1.03); transform: translateY(-0.5px); }
-.stDataFrame { border-radius: 12px; overflow: hidden; }
-.author { display:flex; justify-content:flex-end; margin-top: 10px; }
-.author .tiny { font-size: 12px; opacity:.9; text-align:center; } .author .name { font-weight: 800; }
+  color: #1c102d;
+  border: none;
+  box-shadow: 0 10px 28px rgba(255,62,165,.35);
+}
+
+.stButton > button:hover {
+  filter: brightness(1.03);
+  transform: translateY(-0.5px);
+}
+
+/* ===== Dataframes ===== */
+.stDataFrame {
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+/* ===== Autor ===== */
+.author {
+  display:flex;
+  justify-content:flex-end;
+  margin-top: 10px;
+}
+
+.author .tiny {
+  font-size: 12px;
+  opacity:.9;
+  text-align:center;
+}
+
+.author .name {
+  font-weight: 800;
+}
+
 </style>
-""", unsafe_allow_html=True)
-st.markdown("""
-<div class="h-hero">
-  <div class="logo-pill">💸</div>
-  <div>
-    <div class="h-title">Extrac-Tete</div>
-    <div class="h-sub">Convertidor de Extractos Bancarios</div>
-  </div>
-</div>
-<div class="h-note">Elegí el banco y subí al menos un PDF. Configurá las opciones y convertí a Excel.</div>
 """, unsafe_allow_html=True)
 
 # ===== Utilidades =====
