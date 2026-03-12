@@ -248,16 +248,19 @@ input[type="checkbox"] {
   font-weight: 800;
 }
 
-/* ===== SELECTBOX (AUTO) ===== */
+/* ===== SELECTBOX BANCO ===== */
 
-div[data-baseweb="select"] {
-    background: rgba(255,255,255,0.08) !important;
-    border: 1px solid rgba(255,255,255,0.15) !important;
+.stSelectbox div[data-baseweb="select"] {
+    background: rgba(255,255,255,0.06) !important;
+    border-radius: 12px !important;
+}
+
+.stSelectbox div[data-baseweb="select"] > div {
     color: #f2eaff !important;
 }
 
-div[data-baseweb="select"] span {
-    color: #f2eaff !important;
+.stSelectbox svg {
+    fill: #cbb6f3 !important;
 }
 
 
@@ -1283,5 +1286,6 @@ st.markdown("""
   </div>
 </div>
 """, unsafe_allow_html=True)
+
 
 
