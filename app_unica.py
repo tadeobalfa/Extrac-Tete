@@ -221,6 +221,18 @@ input[type="checkbox"] {
 
 </style>
 """, unsafe_allow_html=True)
+st.markdown("""
+<div class="h-hero">
+    <div class="logo-pill">💳</div>
+    <div>
+        <div class="h-title">Extrac-Tete</div>
+        <div class="h-sub">Convertidor de Extractos Bancarios</div>
+    </div>
+</div>
+<div class="h-note">
+Elegí el banco y subí al menos un PDF. Configurá las opciones y convertí a Excel.
+</div>
+""", unsafe_allow_html=True)
 
 # ===== Utilidades =====
 EXPECTED_COLS = ["Fecha", "Descripción", "Clasificacion", "Débito", "Crédito", "Saldo"]
