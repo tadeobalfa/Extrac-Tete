@@ -35,6 +35,35 @@ st.set_page_config(page_title="Extrac-Tete · Convertidor de Extractos", page_ic
 st.markdown("""
 <style>
 
+/* ===== Labels más visibles ===== */
+
+label {
+    color: #f2eaff !important;
+    font-weight: 500;
+}
+
+.stCheckbox label {
+    color: #f2eaff !important;
+}
+
+.stCheckbox p {
+    color: #f2eaff !important;
+}
+
+[data-testid="stMarkdownContainer"] p {
+    color: #f2eaff !important;
+}
+
+/* Texto de selectbox */
+.stSelectbox label {
+    color: #f2eaff !important;
+}
+
+/* Texto del uploader */
+[data-testid="stFileUploader"] label {
+    color: #f2eaff !important;
+}
+
 /* ===== Ocultar barra superior de Streamlit ===== */
 header {visibility: hidden;}
 #MainMenu {visibility: hidden;}
@@ -1198,3 +1227,4 @@ st.markdown("""
   </div>
 </div>
 """, unsafe_allow_html=True)
+
