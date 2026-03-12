@@ -638,11 +638,11 @@ files = st.file_uploader(
     "Subí uno o varios PDF del banco seleccionado",
     type=["pdf"],
     accept_multiple_files=True,
-    max_upload_size=400,
+    max_upload_size=80,
 )
-MAX_FILES = 25
-MAX_TOTAL_MB = 800
-MAX_FILE_MB_APP = 400
+MAX_FILES = 20
+MAX_TOTAL_MB = 300
+MAX_FILE_MB_APP = 80
 
 if files:
     if len(files) > MAX_FILES:
