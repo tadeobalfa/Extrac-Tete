@@ -5,6 +5,7 @@ import io
 import re
 import time
 import hashlib
+import unicodedata
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
 from typing import Callable, Dict, List, Tuple, Optional
@@ -428,10 +429,36 @@ BANK_RULE_SHEETS = {
     "BRUBANK": "BRUBANK",
 }
 
+BANK_SHEET_ALIASES = {
+    "BANCOR": ["BANCOR", "BANCO CORDOBA", "BANCO DE CORDOBA"],
+    "GALICIA": ["GALICIA", "BANCO GALICIA"],
+    "ICBC": ["ICBC"],
+    "PATAGONIA": ["PATAGONIA", "BANCO PATAGONIA"],
+    "MACRO": ["MACRO", "BANCO MACRO"],
+    "MACRO 2": ["MACRO 2", "MACRO2", "BANCO MACRO 2"],
+    "NACION": ["NACION", "BANCO NACION", "BANCO DE LA NACION ARGENTINA"],
+    "SANTANDER RIO": ["SANTANDER RIO", "SANTANDER", "SANTANDER RIO "],
+    "SUPERVIELLE": ["SUPERVIELLE", "BANCO SUPERVIELLE"],
+    "SUPERVIELLE 2": ["SUPERVIELLE 2", "SUPERVIELLE2", "BANCO SUPERVIELLE 2"],
+    "MERCADO PAGO": ["MERCADO PAGO", "MERCADOPAGO"],
+    "CREDICOOP": ["CREDICOOP", "BANCO CREDICOOP"],
+    "BBVA": ["BBVA", "BANCO BBVA"],
+    "BRUBANK": ["BRUBANK", "BRU BANK"],
+}
+
+BANK_CLASSIFICATION_FALLBACKS = {
+    "MACRO 2": ["MACRO 2", "MACRO"],
+    "SUPERVIELLE 2": ["SUPERVIELLE 2", "SUPERVIELLE"],
+    "BRUBANK": ["BRUBANK"],
+}
+
 def _norm_text(s: str) -> str:
     if s is None:
         return ""
-    s = str(s).upper().strip()
+    s = str(s)
+    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
+    s = s.upper().strip()
+    s = s.replace("\n", " ").replace("\r", " ").replace("\t", " ")
     s = re.sub(r"\s+", " ", s)
     return s
 
@@ -439,6 +466,22 @@ def _find_classif_file() -> Optional[Path]:
     for p in CLASSIF_FILE_CANDIDATES:
         if p.exists():
             return p
+    return None
+
+def _resolve_sheet_name(xls: pd.ExcelFile, bank_name: str) -> Optional[str]:
+    sheet_map = {_norm_text(s): s for s in xls.sheet_names}
+
+    candidates = []
+    if bank_name in BANK_RULE_SHEETS:
+        candidates.append(BANK_RULE_SHEETS[bank_name])
+
+    candidates.extend(BANK_SHEET_ALIASES.get(bank_name, []))
+
+    for cand in candidates:
+        real = sheet_map.get(_norm_text(cand))
+        if real:
+            return real
+
     return None
 
 @st.cache_data(show_spinner=False)
@@ -452,8 +495,10 @@ def _load_classification_rules(_mtime: Optional[float] = None):
     bank_rules: Dict[str, List[dict]] = {}
     general_rules: List[dict] = []
 
-    for bank_name, sheet_name in BANK_RULE_SHEETS.items():
-        if sheet_name not in xls.sheet_names:
+    for bank_name in BANK_RULE_SHEETS.keys():
+        sheet_name = _resolve_sheet_name(xls, bank_name)
+
+        if not sheet_name:
             bank_rules[bank_name] = []
             continue
 
@@ -462,11 +507,12 @@ def _load_classification_rules(_mtime: Optional[float] = None):
 
         desc_col = None
         class_col = None
+
         for c in df_sheet.columns:
             cu = _norm_text(c)
-            if cu in {"DESCRIPCIÓN", "DESCRIPCION"}:
+            if cu in {"DESCRIPCION", "DESCRIPCION BASE", "DESCRIPCION BANCO", "DESCRIPCION ORIGINAL"}:
                 desc_col = c
-            elif cu == "CLASIFICACION":
+            elif cu in {"CLASIFICACION", "CLASIFICACION FINAL"}:
                 class_col = c
 
         rules = []
@@ -474,8 +520,10 @@ def _load_classification_rules(_mtime: Optional[float] = None):
             for idx, row in df_sheet.iterrows():
                 pattern = _norm_text(row.get(desc_col, ""))
                 clasif = str(row.get(class_col, "")).strip()
-                if not pattern or pattern == "NAN" or not clasif or clasif.upper() == "NAN":
+
+                if not pattern or pattern == "NAN" or not clasif or _norm_text(clasif) == "NAN":
                     continue
+
                 rules.append({
                     "pattern": pattern,
                     "clasificacion": clasif,
@@ -485,8 +533,14 @@ def _load_classification_rules(_mtime: Optional[float] = None):
 
         bank_rules[bank_name] = rules
 
-    if "GENERAL" in xls.sheet_names:
-        df_gen = pd.read_excel(path, sheet_name="GENERAL")
+    general_sheet_name = None
+    for s in xls.sheet_names:
+        if _norm_text(s) == "GENERAL":
+            general_sheet_name = s
+            break
+
+    if general_sheet_name:
+        df_gen = pd.read_excel(path, sheet_name=general_sheet_name)
         df_gen.columns = [str(c).strip() for c in df_gen.columns]
 
         desc_col = None
@@ -495,11 +549,11 @@ def _load_classification_rules(_mtime: Optional[float] = None):
 
         for c in df_gen.columns:
             cu = _norm_text(c)
-            if cu in {"DESCRIPCIÓN", "DESCRIPCION"}:
+            if cu in {"DESCRIPCION", "DESCRIPCION BASE", "DESCRIPCION BANCO", "DESCRIPCION ORIGINAL"}:
                 desc_col = c
-            elif cu == "DEBITO/CREDITO":
+            elif cu in {"DEBITO/CREDITO", "DEBITO CREDITO", "TIPO"}:
                 dc_col = c
-            elif cu == "CLASIFICACION":
+            elif cu in {"CLASIFICACION", "CLASIFICACION FINAL"}:
                 class_col = c
 
         if desc_col and class_col:
@@ -508,7 +562,7 @@ def _load_classification_rules(_mtime: Optional[float] = None):
                 dc = _norm_text(row.get(dc_col, "")) if dc_col else ""
                 clasif = str(row.get(class_col, "")).strip()
 
-                if not pattern or pattern == "NAN" or not clasif or clasif.upper() == "NAN":
+                if not pattern or pattern == "NAN" or not clasif or _norm_text(clasif) == "NAN":
                     continue
 
                 general_rules.append({
@@ -521,14 +575,31 @@ def _load_classification_rules(_mtime: Optional[float] = None):
 
     return {"BANK": bank_rules, "GENERAL": general_rules}
 
+def _get_bank_rules_with_fallback(bank: str, rules_pack: dict) -> List[dict]:
+    banks_to_try = BANK_CLASSIFICATION_FALLBACKS.get(bank, [bank])
+
+    merged = []
+    seen = set()
+
+    for b in banks_to_try:
+        for rule in rules_pack["BANK"].get(b, []):
+            key = (rule["pattern"], rule["clasificacion"])
+            if key not in seen:
+                seen.add(key)
+                merged.append(rule)
+
+    return merged
+
 def _classify_row(bank: str, descripcion: str, debito: float, credito: float, rules_pack: dict) -> str:
     desc = _norm_text(descripcion)
     if not desc:
         return ""
 
     bank_candidates = []
-    for rule in rules_pack["BANK"].get(bank, []):
-        if rule["pattern"] in desc:
+    bank_rules = _get_bank_rules_with_fallback(bank, rules_pack)
+
+    for rule in bank_rules:
+        if rule["pattern"] and rule["pattern"] in desc:
             bank_candidates.append(rule)
 
     if bank_candidates:
@@ -537,10 +608,11 @@ def _classify_row(bank: str, descripcion: str, debito: float, credito: float, ru
 
     general_candidates = []
     for rule in rules_pack["GENERAL"]:
-        if rule["pattern"] not in desc:
+        if not rule["pattern"] or rule["pattern"] not in desc:
             continue
 
-        cond = rule.get("debcred", "")
+        cond = _norm_text(rule.get("debcred", ""))
+
         if cond == "DEBITO" and float(debito) <= 0:
             continue
         if cond == "CREDITO" and float(credito) <= 0:
@@ -563,6 +635,13 @@ def _apply_classification(df: pd.DataFrame, bank: str) -> pd.DataFrame:
     path = _find_classif_file()
     mtime = path.stat().st_mtime if path is not None else None
     rules_pack = _load_classification_rules(mtime)
+
+    bank_rules_count = len(_get_bank_rules_with_fallback(bank, rules_pack))
+    general_rules_count = len(rules_pack.get("GENERAL", []))
+    _log(f"Clasificación {bank}: {bank_rules_count} reglas banco | {general_rules_count} reglas generales")
+
+    if bank_rules_count == 0 and general_rules_count == 0:
+        _log(f"Advertencia: no se encontraron reglas de clasificación para {bank}")
 
     if df.empty:
         return df
@@ -1126,7 +1205,7 @@ def _show_main_error(errors: List[str]):
 
 Para ver más información técnica, revisá la pestaña **Registro**."""
     )
-    
+
 if do_convert:
     if not files:
         st.warning("Subí al menos un PDF.")
@@ -1337,7 +1416,7 @@ if do_convert:
 
         if errors:
             _show_main_error(errors)
-            
+
         if errors and atomic_mode:
             progress_box.empty()
             tab_log.error("Se canceló la generación del Excel (modo atómico activo).")
