@@ -1447,7 +1447,9 @@ if do_convert:
                             fin = pd.DataFrame(columns=EXPECTED_COLS)
 
                     fin = _normalize_df(fin)
-                    fin = _normalize_df(FIXES[detected_bank](fin))
+                    fin = fix_bbva(fin)
+                    
+                    _log(f"BBVA fix ejecutado: {fin.attrs.get('bbva_repairs', 0)} fila(s) reparada(s)")
 
                     if do_classification:
                         fin = _apply_classification(fin, detected_bank)
