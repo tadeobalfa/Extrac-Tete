@@ -872,6 +872,40 @@ MES_MAP = {
     "noviembre": 11, "diciembre": 12
 }
 
+def _ensure_columns_for_export(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+
+    rename = {}
+    for col in df.columns:
+        low = str(col).strip().lower()
+        if low in {"descripcion completa", "descripción completa"}:
+            rename[col] = "Descripción"
+        elif low in {"debito", "débito"}:
+            rename[col] = "Débito"
+        elif low in {"credito", "crédito"}:
+            rename[col] = "Crédito"
+        elif low == "saldo":
+            rename[col] = "Saldo"
+        elif low == "fecha":
+            rename[col] = "Fecha"
+        elif low == "cuenta":
+            rename[col] = "Cuenta"
+
+    if rename:
+        df = df.rename(columns=rename)
+
+    for c in EXPECTED_COLS:
+        if c not in df.columns:
+            if c in {"Débito", "Crédito", "Saldo"}:
+                df[c] = 0.0
+            else:
+                df[c] = ""
+
+    if "Cuenta" in df.columns:
+        return df[EXPECTED_COLS + ["Cuenta"]]
+
+    return df[EXPECTED_COLS]
+
 def _infer_period_from_filename(name: str):
     s = name.lower().replace("_", " ").replace("-", " ").replace(".", " ").replace("/", " ")
     m = re.search(r"(20\d{2})\D+(\d{1,2})", s)
@@ -1349,9 +1383,9 @@ if do_convert:
                     timeout=timeout_sec,
                 )
                 
-                if detected_bank == "BBVA":
+                if bank == "BBVA":
                     if isinstance(raw, pd.DataFrame):
-                        fin = raw
+                        fin = raw.copy()
                     else:
                         try:
                             fin = pd.DataFrame(raw)
@@ -1536,8 +1570,10 @@ if do_convert:
                     if "Cuenta" in fin.columns:
                         for cta, chunk in fin.groupby(fin["Cuenta"].fillna("GENERAL"), sort=False):
                             chunk = chunk.drop(columns=[c for c in ["Cuenta"] if c in chunk.columns])
+                            chunk = _ensure_columns_for_export(chunk)
                             account_map.setdefault(str(cta), []).append(chunk[EXPECTED_COLS])
                     else:
+                        fin = _ensure_columns_for_export(fin)
                         account_map.setdefault("GENERAL", []).append(fin[EXPECTED_COLS])
 
                     if add_blank:
