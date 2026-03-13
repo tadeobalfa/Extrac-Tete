@@ -1121,6 +1121,35 @@ def fix_bbva(df):
             prev_real_saldo = saldo_final
 
     df.attrs["bbva_repairs"] = repairs
+    # -------------------------------------------------
+    # REPARACIÓN FINAL POR DELTA DE SALDO (BBVA)
+    # -------------------------------------------------
+    prev_saldo = None
+
+    for i, row in df.iterrows():
+
+        deb = float(row["Débito"] or 0.0)
+        cred = float(row["Crédito"] or 0.0)
+        saldo = float(row["Saldo"] or 0.0)
+
+        if saldo == 0:
+            continue
+
+        if prev_saldo is not None:
+
+            delta = saldo - prev_saldo
+
+            # Si el delta no coincide con débito/crédito actual
+            if abs(delta - cred) > 0.01 and abs(delta + deb) > 0.01:
+
+                if delta > 0:
+                    df.at[i, "Crédito"] = round(delta, 2)
+                    df.at[i, "Débito"] = 0.0
+                else:
+                    df.at[i, "Débito"] = round(abs(delta), 2)
+                    df.at[i, "Crédito"] = 0.0
+
+        prev_saldo = saldo
     return df
     
 def fix_brubank(df):
