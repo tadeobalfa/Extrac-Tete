@@ -412,6 +412,71 @@ CLASSIF_FILE_CANDIDATES = [
     Path("/mnt/data/CLASIFICACION EXTRACTOS.xlsx"),
 ]
 
+FORMAT_IMG_DIR_CANDIDATES = [
+    Path(__file__).resolve().parent / "formatos_pdf",
+    Path("/mnt/data/formatos_pdf"),
+]
+
+BANK_FORMAT_IMAGES = {
+    "GALICIA": "galicia.png",
+    "SUPERVIELLE": "supervielle.png",
+    "SUPERVIELLE 2": "supervielle2.png",
+    "BANCOR": "bancor.png",
+    "NACION": "nacion.png",
+    "MERCADO PAGO": "mercadopago.png",
+    "MACRO": "macro.png",
+    "MACRO 2": "macro2.png",
+    "CREDICOOP": "credicoop.png",
+    "BBVA": "bbva.png",
+    "ICBC": "icbc.png",
+    "PATAGONIA": "patagonia.png",
+    "SANTANDER RIO": "santander.png",
+    "BRUBANK": "brubank.png",
+}
+
+FORMAT_NOTE = """
+**Formato requerido del PDF**
+
+El archivo debe ser el **extracto original descargado del banco**.
+
+**No se pueden subir:**
+- capturas de pantalla
+- PDFs escaneados
+- PDFs editados o modificados
+
+Si el formato del PDF difiere del ejemplo, el sistema puede no detectar correctamente los movimientos.
+"""
+
+def _find_format_image(bank_name: str) -> Optional[Path]:
+    fname = BANK_FORMAT_IMAGES.get(bank_name)
+    if not fname:
+        return None
+
+    for base in FORMAT_IMG_DIR_CANDIDATES:
+        p = base / fname
+        if p.exists():
+            return p
+
+    return None
+
+def _render_bank_format_help(bank_name: str):
+    if bank_name == "AUTO":
+        with st.expander("ℹ Ver formato esperado del PDF", expanded=False):
+            st.info("Seleccioná un banco específico para ver el ejemplo visual del formato esperado.")
+        return
+
+    img_path = _find_format_image(bank_name)
+
+    with st.expander("ℹ Ver formato esperado del PDF", expanded=False):
+        st.markdown(f"**Ejemplo de extracto válido – {bank_name}**")
+
+        if img_path and img_path.exists():
+            st.image(str(img_path), use_container_width=True)
+        else:
+            st.warning(f"No se encontró la imagen de ejemplo para {bank_name}.")
+
+        st.markdown(FORMAT_NOTE)
+
 BANK_RULE_SHEETS = {
     "BANCOR": "BANCOR",
     "GALICIA": "GALICIA",
@@ -1017,9 +1082,11 @@ col1, col2 = st.columns([1, 2], vertical_alignment="center")
 with col1:
     bank_options = ["AUTO"] + sorted(PARSERS.keys())
     bank = st.selectbox("Banco", bank_options, index=0)
+
 with col2:
     st.caption("La salida se formatea como **Fecha | Descripción | Clasificacion | Débito | Crédito | Saldo** (numérico).")
 
+_render_bank_format_help(bank)
 files = st.file_uploader(
     "Subí uno o varios PDF del banco seleccionado",
     type=["pdf"],
