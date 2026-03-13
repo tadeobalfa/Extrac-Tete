@@ -1403,13 +1403,7 @@ if do_convert:
                     data,
                     timeout=timeout_sec,
                 )
-            if detected_bank == "BBVA":
-                try:
-                    _log(f"DEBUG BBVA raw cols: {list(raw.columns)}")
-                    _log(f"DEBUG BBVA raw preview:\n{raw.head(10).to_string()}")
-                except Exception as e:
-                    _log(f"DEBUG BBVA raw error: {e}")
-
+                
                 if detected_bank == "BBVA":
                     if isinstance(raw, pd.DataFrame):
                         fin = raw.copy()
@@ -1427,6 +1421,13 @@ if do_convert:
 
                     fin = _ensure_columns_for_export(fin)
 
+                else:
+                    mid = _normalize_df(raw)
+                    fin = _normalize_df(FIXES[detected_bank](mid))
+
+                    if do_classification:
+                        fin = _apply_classification(fin, detected_bank)                
+                    
                     if detected_bank != "SUPERVIELLE 2":
                         fin = _sort_rows_by_fecha(fin)
 
