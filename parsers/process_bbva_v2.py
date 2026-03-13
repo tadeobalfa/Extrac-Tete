@@ -140,34 +140,86 @@ def _group_words_by_line(words: List[dict], y_tol: float = 2.0) -> List[List[dic
     return lines
 
 def _discover_columns(words: List[dict], page_w: float) -> Optional[PageColumns]:
+    """
+    Detecta columnas Débito / Crédito / Saldo.
+    Primero intenta por encabezados textuales.
+    Si no puede, cae a clustering de importes.
+    """
+
+    # -------- Intento 1: usar encabezados --------
+    header_deb = None
+    header_cred = None
+    header_saldo = None
+
+    for w in words:
+        txt = (w.get("text", "") or "").strip().upper()
+        xc = (w["x0"] + w["x1"]) / 2.0
+
+        if txt in {"DEBITO", "DÉBITO"}:
+            header_deb = xc
+        elif txt in {"CREDITO", "CRÉDITO"}:
+            header_cred = xc
+        elif txt == "SALDO":
+            header_saldo = xc
+
+    if header_deb and header_cred and header_saldo:
+        return PageColumns(
+            cut1=(header_deb + header_cred) / 2.0,
+            cut2=(header_cred + header_saldo) / 2.0,
+            left_border=max(0, header_deb - 120),
+        )
+
+    # -------- Intento 2: clustering por importes --------
     xs = []
     for w in words:
         t = w.get("text", "")
-        if not _is_amount_strict(t): continue
+        if not _is_amount_strict(t):
+            continue
         xc = (w["x0"] + w["x1"]) / 2.0
-        if xc >= page_w * 0.45: xs.append(xc)
-    if len(xs) < 3: return None
+
+        # antes estaba en 0.45 y podía dejar afuera Débito
+        if xc >= page_w * 0.30:
+            xs.append(xc)
+
+    if len(xs) < 3:
+        return None
+
     centers = None
     try:
         if HAS_SKLEARN:
             X = np.array(xs).reshape(-1, 1)
-            km = KMeans(n_clusters=3, n_init="auto" if hasattr(KMeans, "n_init") else 10, random_state=0)
-            km.fit(X); centers = sorted([c[0] for c in km.cluster_centers_])
+            km = KMeans(
+                n_clusters=3,
+                n_init="auto" if hasattr(KMeans, "n_init") else 10,
+                random_state=0
+            )
+            km.fit(X)
+            centers = sorted([c[0] for c in km.cluster_centers_])
     except Exception:
         centers = None
+
     if centers is None:
         xs2 = sorted(xs)
         groups = [[xs2[0]]]
         for x in xs2[1:]:
-            if abs(x - groups[-1][-1]) <= 10: groups[-1].append(x)
-            else: groups.append([x])
+            if abs(x - groups[-1][-1]) <= 12:
+                groups[-1].append(x)
+            else:
+                groups.append([x])
+
         groups = sorted(groups, key=lambda g: (len(g), np.median(g)), reverse=True)[:3]
         centers = sorted([float(np.median(g)) for g in groups])
-    if len(centers) != 3: return None
+
+    if len(centers) != 3:
+        return None
+
     debit_c, credit_c, saldo_c = centers
-    return PageColumns(cut1=(debit_c + credit_c) / 2.0,
-                       cut2=(credit_c + saldo_c) / 2.0,
-                       left_border=page_w * 0.45)
+
+    return PageColumns(
+        cut1=(debit_c + credit_c) / 2.0,
+        cut2=(credit_c + saldo_c) / 2.0,
+        left_border=max(0, debit_c - 120),
+    )
 
 def _take_last_amount_from_tokens(tokens: List[str]) -> float:
     last: Optional[float] = None
@@ -238,6 +290,10 @@ def parse_bbva_pdf(source: Union[str, bytes, io.BytesIO]) -> Dict[str, pd.DataFr
                     continue
 
             cols = _discover_columns(words, page_w)
+            print("DEBUG BBVA COLS:", current_account, "page_w=", page_w,
+      		  "left_border=", None if cols is None else round(cols.left_border, 2),
+      		  "cut1=", None if cols is None else round(cols.cut1, 2),
+      		  "cut2=", None if cols is None else round(cols.cut2, 2))
             if not cols:
                 continue
 
@@ -312,6 +368,7 @@ def parse_bbva_pdf(source: Union[str, bytes, io.BytesIO]) -> Dict[str, pd.DataFr
 
                     for w in ln2:
                         t = w["text"]; xc = (w["x0"] + w["x1"]) / 2.0
+
                         if xc < cols.left_border:
                             if not _is_dateish(t):
                                 desc_parts.append(t)
@@ -476,4 +533,3 @@ def _cli():
 
 if __name__ == "__main__":
     _cli()
-
