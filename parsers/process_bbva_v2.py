@@ -38,6 +38,11 @@ HARD_END_MARKERS = tuple(s.upper() for s in [
     "LEGALES Y AVISOS",
     "DETALLE DE IMPUESTO",
     "TOTAL SALDOS DISPONIBLES",
+    "TRANSFERENCIAS",
+    "RECIBIDAS (INFORMACION AL",
+    "RECIBIDAS (INFORMACIÓN AL",
+    "IMPUESTO A LOS DEBITOS Y CREDITOS",
+    "IMPUESTO A LOS DEBITOS",
 ])
 
 # Limpieza de descripción
@@ -139,45 +144,76 @@ def _group_words_by_line(words: List[dict], y_tol: float = 2.0) -> List[List[dic
     if cur: lines.append(sorted(cur, key=lambda ww: ww["x0"]))
     return lines
 
-def _discover_columns(words: List[dict], page_w: float) -> Optional[PageColumns]:
+def _norm_hdr(s: str) -> str:
+    s = (s or "").upper()
+    s = s.replace("É", "E").replace("Á", "A").replace("Í", "I").replace("Ó", "O").replace("Ú", "U")
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+def _discover_columns_from_headers(lines: List[List[dict]]) -> Optional[PageColumns]:
     """
-    Detecta columnas Débito / Crédito / Saldo.
-    Primero intenta por encabezados textuales.
-    Si no puede, cae a clustering de importes.
+    Busca encabezado FECHA / ORIGEN / CONCEPTO / DEBITO / CREDITO / SALDO
+    y usa esas posiciones para fijar columnas de forma estable.
     """
+    for ln in lines:
+        txt = " ".join([w["text"] for w in ln]).strip()
+        up = _norm_hdr(txt)
 
-    # -------- Intento 1: usar encabezados --------
-    header_deb = None
-    header_cred = None
-    header_saldo = None
+        if "CONCEPTO" not in up or "SALDO" not in up:
+            continue
+        if "DEBITO" not in up and "CREDITO" not in up:
+            continue
 
-    for w in words:
-        txt = (w.get("text", "") or "").strip().upper()
-        xc = (w["x0"] + w["x1"]) / 2.0
+        x_concepto = None
+        x_debito = None
+        x_credito = None
+        x_saldo = None
 
-        if txt in {"DEBITO", "DÉBITO"}:
-            header_deb = xc
-        elif txt in {"CREDITO", "CRÉDITO"}:
-            header_cred = xc
-        elif txt == "SALDO":
-            header_saldo = xc
+        for w in ln:
+            t = _norm_hdr(w["text"])
+            xc = (w["x0"] + w["x1"]) / 2.0
 
-    if header_deb and header_cred and header_saldo:
-        return PageColumns(
-            cut1=(header_deb + header_cred) / 2.0,
-            cut2=(header_cred + header_saldo) / 2.0,
-            left_border=max(0, header_deb - 120),
-        )
+            if "CONCEPTO" in t:
+                x_concepto = xc
+            elif t in {"DEBITO", "DEBITOS"}:
+                x_debito = xc
+            elif t in {"CREDITO", "CREDITO", "CREDITOS"}:
+                x_credito = xc
+            elif "SALDO" in t:
+                x_saldo = xc
 
-    # -------- Intento 2: clustering por importes --------
+        if x_debito is not None and x_credito is not None and x_saldo is not None:
+            left_border = x_debito - 120
+            if x_concepto is not None:
+                left_border = max(x_concepto + 40, x_debito - 140)
+
+            return PageColumns(
+                cut1=(x_debito + x_credito) / 2.0,
+                cut2=(x_credito + x_saldo) / 2.0,
+                left_border=max(0.0, left_border),
+            )
+
+    return None
+
+def _discover_columns(words: List[dict], page_w: float, lines: Optional[List[List[dict]]] = None) -> Optional[PageColumns]:
+    """
+    1) Primero intenta detectar columnas por encabezados textuales.
+    2) Si no puede, cae a clustering por importes.
+    """
+    if lines:
+        by_header = _discover_columns_from_headers(lines)
+        if by_header is not None:
+            return by_header
+
     xs = []
     for w in words:
         t = w.get("text", "")
         if not _is_amount_strict(t):
             continue
+
         xc = (w["x0"] + w["x1"]) / 2.0
 
-        # antes estaba en 0.45 y podía dejar afuera Débito
+        # Más permisivo que 0.45 para no perder la columna débito
         if xc >= page_w * 0.30:
             xs.append(xc)
 
@@ -218,7 +254,7 @@ def _discover_columns(words: List[dict], page_w: float) -> Optional[PageColumns]
     return PageColumns(
         cut1=(debit_c + credit_c) / 2.0,
         cut2=(credit_c + saldo_c) / 2.0,
-        left_border=max(0, debit_c - 120),
+        left_border=max(0.0, debit_c - 120),
     )
 
 def _take_last_amount_from_tokens(tokens: List[str]) -> float:
@@ -289,7 +325,7 @@ def parse_bbva_pdf(source: Union[str, bytes, io.BytesIO]) -> Dict[str, pd.DataFr
                 if not found:
                     continue
 
-            cols = _discover_columns(words, page_w)
+            cols = _discover_columns(words, page_w, lines)
             print("DEBUG BBVA COLS:", current_account, "page_w=", page_w,
       		  "left_border=", None if cols is None else round(cols.left_border, 2),
       		  "cut1=", None if cols is None else round(cols.cut1, 2),
@@ -389,14 +425,17 @@ def parse_bbva_pdf(source: Union[str, bytes, io.BytesIO]) -> Dict[str, pd.DataFr
                 descripcion_raw = " ".join(desc_parts).strip() or DATE_RE.sub("", text_line, count=1).strip()
                 descripcion = _clean_description(descripcion_raw)
 
-                # Si hay importe al final de la descripción, úsalo solo si deb/cred == 0
-                if descripcion and abs(deb) < 0.004 and abs(cred) < 0.004:
+                # Reparación de casos donde el saldo cae en Crédito y el importe quedó pegado al final de la descripción
+                if descripcion and saldo_val is None and abs(deb) < 0.004 and cred > 0:
                     mtrail = re.search(r"(?:\s|^)([-+]?\s*\$?\s*(?:\d{1,3}(?:\.\d{3})+|\d+)(?:,\d{2})(?:-)?)[\s]*$", descripcion)
                     if mtrail:
                         val = _clean_amount(mtrail.group(1))
                         if val is not None:
-                            if val < 0: deb = abs(val); cred = 0.0
-                            else: cred = val; deb = 0.0
+                            saldo_val = float(cred); cred = 0.0
+                            if val < 0:
+				deb = abs(val)
+                            else:
+				cred = abs(val)
                             descripcion = descripcion[:mtrail.start()].rstrip(" -—•:")
 
                 # ------ FIX SUAVE: delta de saldo para "IMP.LEY ..." si no hay importes explícitos ------
