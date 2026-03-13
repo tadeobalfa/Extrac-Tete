@@ -1033,49 +1033,60 @@ def fix_credicoop(df):
     return df
 
 def fix_bbva(df):
-
     df = df.copy()
 
     if df.empty:
         return df
 
-    df["Descripción"] = df["Descripción"].astype(str)
+    # Asegurar columnas esperadas
+    for c in ["Descripción", "Débito", "Crédito", "Saldo"]:
+        if c not in df.columns:
+            if c == "Descripción":
+                df[c] = ""
+            else:
+                df[c] = 0.0
 
+    df["Descripción"] = df["Descripción"].astype(str).fillna("")
     df["Débito"] = df["Débito"].apply(_coerce_number)
     df["Crédito"] = df["Crédito"].apply(_coerce_number)
     df["Saldo"] = df["Saldo"].apply(_coerce_number)
 
-    trailing_amt = re.compile(
-        r"(.*?)([-+]?\s*\$?\s*(?:\d{1,3}(?:\.\d{3})+|\d+)(?:,\d{2})(?:-)?)\s*$"
-    )
+    prev_saldo = None
 
     for i, row in df.iterrows():
+        desc = str(row.get("Descripción", "") or "").strip().upper()
+        deb = float(row.get("Débito", 0.0) or 0.0)
+        cred = float(row.get("Crédito", 0.0) or 0.0)
+        saldo = float(row.get("Saldo", 0.0) or 0.0)
 
-        desc = str(row["Descripción"])
-        deb = float(row["Débito"])
-        cred = float(row["Crédito"])
-        saldo = row["Saldo"]
+        # Si la fila ya tiene saldo válido, lo tomamos como referencia
+        if saldo != 0.0:
+            prev_saldo = saldo
+            continue
 
-        # detectar monto pegado a la descripción
-        m = trailing_amt.match(desc)
+        # Caso roto típico BBVA:
+        # Débito = 0
+        # Crédito = en realidad el saldo final de la fila
+        # Saldo = 0/vacío
+        #
+        # Solo corregimos si tenemos saldo anterior.
+        if prev_saldo is not None and deb == 0.0 and cred > 0.0 and saldo == 0.0:
+            saldo_real = cred
+            delta = saldo_real - prev_saldo
 
-        if m and deb == 0 and cred != 0 and (pd.isna(saldo) or saldo == 0):
+            # Si el saldo sube, fue un crédito real.
+            # Si el saldo baja, fue un débito real.
+            if abs(delta) >= 0.004:
+                df.at[i, "Saldo"] = round(saldo_real, 2)
 
-            desc_base = m.group(1).strip()
-            monto_txt = m.group(2)
+                if delta > 0:
+                    df.at[i, "Crédito"] = round(delta, 2)
+                    df.at[i, "Débito"] = 0.0
+                else:
+                    df.at[i, "Débito"] = round(abs(delta), 2)
+                    df.at[i, "Crédito"] = 0.0
 
-            monto = _coerce_number(monto_txt)
-
-            # el crédito en realidad era el saldo
-            df.at[i, "Saldo"] = cred
-            df.at[i, "Crédito"] = 0.0
-
-            if monto < 0:
-                df.at[i, "Débito"] = abs(monto)
-            else:
-                df.at[i, "Crédito"] = abs(monto)
-
-            df.at[i, "Descripción"] = desc_base
+                prev_saldo = saldo_real
 
     return df
     
