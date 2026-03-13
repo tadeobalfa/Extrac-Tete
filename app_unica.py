@@ -1038,7 +1038,7 @@ def fix_bbva(df):
     if df.empty:
         return df
 
-    # Asegurar columnas esperadas
+    # Asegurar columnas
     for c in ["Descripción", "Débito", "Crédito", "Saldo"]:
         if c not in df.columns:
             if c == "Descripción":
@@ -1051,42 +1051,94 @@ def fix_bbva(df):
     df["Crédito"] = df["Crédito"].apply(_coerce_number)
     df["Saldo"] = df["Saldo"].apply(_coerce_number)
 
-    prev_saldo = None
+    # Detectar monto al final de la descripción
+    trailing_amt_re = re.compile(
+        r"^(.*?)([-+]?\s*\$?\s*(?:\d{1,3}(?:\.\d{3})+|\d+)(?:,\d{2})(?:-)?)\s*$"
+    )
+
+    # Heurística: si casi todos los saldos están en cero y créditos tienen valores,
+    # entonces el parser metió el saldo en Crédito.
+    nonzero_credit = (df["Crédito"].abs() > 0.004).sum()
+    zero_saldo = (df["Saldo"].abs() <= 0.004).sum()
+
+    bbva_shifted_layout = (
+        len(df) > 0
+        and nonzero_credit >= max(3, int(len(df) * 0.4))
+        and zero_saldo >= max(3, int(len(df) * 0.7))
+    )
+
+    prev_real_saldo = None
 
     for i, row in df.iterrows():
-        desc = str(row.get("Descripción", "") or "").strip().upper()
-        deb = float(row.get("Débito", 0.0) or 0.0)
-        cred = float(row.get("Crédito", 0.0) or 0.0)
-        saldo = float(row.get("Saldo", 0.0) or 0.0)
+        desc = str(row["Descripción"]).strip()
+        deb = float(row["Débito"] or 0.0)
+        cred = float(row["Crédito"] or 0.0)
+        saldo = float(row["Saldo"] or 0.0)
 
-        # Si la fila ya tiene saldo válido, lo tomamos como referencia
-        if saldo != 0.0:
-            prev_saldo = saldo
+        m = trailing_amt_re.match(desc)
+
+        # CASO FUERTE BBVA:
+        # Crédito contiene el saldo y Saldo viene en cero
+        if bbva_shifted_layout and cred != 0.0 and saldo == 0.0:
+            saldo_real = cred
+            deb_real = deb
+            cred_real = 0.0
+
+            if m:
+                desc_base = m.group(1).rstrip(" -—•:")
+                amt_txt = m.group(2)
+                amt_val = _coerce_number(amt_txt)
+
+                if amt_val < 0:
+                    deb_real = abs(amt_val)
+                    cred_real = 0.0
+                elif amt_val > 0:
+                    cred_real = abs(amt_val)
+                    deb_real = 0.0
+
+                desc = desc_base
+            else:
+                # Si no hay monto pegado, intentar inferir por delta de saldo
+                if prev_real_saldo is not None:
+                    delta = saldo_real - prev_real_saldo
+                    if delta > 0:
+                        cred_real = abs(delta)
+                        deb_real = 0.0
+                    elif delta < 0:
+                        deb_real = abs(delta)
+                        cred_real = 0.0
+
+            df.at[i, "Descripción"] = desc
+            df.at[i, "Saldo"] = round(saldo_real, 2)
+            df.at[i, "Débito"] = round(deb_real, 2)
+            df.at[i, "Crédito"] = round(cred_real, 2)
+
+            prev_real_saldo = saldo_real
             continue
 
-        # Caso roto típico BBVA:
-        # Débito = 0
-        # Crédito = en realidad el saldo final de la fila
-        # Saldo = 0/vacío
-        #
-        # Solo corregimos si tenemos saldo anterior.
-        if prev_saldo is not None and deb == 0.0 and cred > 0.0 and saldo == 0.0:
-            saldo_real = cred
-            delta = saldo_real - prev_saldo
+        # CASO SUAVE:
+        # saldo ya vino bien, pero el importe quedó pegado al final de la descripción
+        if m and deb == 0.0 and cred == 0.0:
+            desc_base = m.group(1).rstrip(" -—•:")
+            amt_txt = m.group(2)
+            amt_val = _coerce_number(amt_txt)
 
-            # Si el saldo sube, fue un crédito real.
-            # Si el saldo baja, fue un débito real.
-            if abs(delta) >= 0.004:
-                df.at[i, "Saldo"] = round(saldo_real, 2)
-
-                if delta > 0:
-                    df.at[i, "Crédito"] = round(delta, 2)
-                    df.at[i, "Débito"] = 0.0
+            if abs(amt_val) > 0.004:
+                if amt_val < 0:
+                    deb = abs(amt_val)
+                    cred = 0.0
                 else:
-                    df.at[i, "Débito"] = round(abs(delta), 2)
-                    df.at[i, "Crédito"] = 0.0
+                    cred = abs(amt_val)
+                    deb = 0.0
 
-                prev_saldo = saldo_real
+                df.at[i, "Descripción"] = desc_base
+                df.at[i, "Débito"] = round(deb, 2)
+                df.at[i, "Crédito"] = round(cred, 2)
+
+        # actualizar saldo previo si ya vino bien
+        saldo_final = float(df.at[i, "Saldo"] or 0.0)
+        if saldo_final != 0.0:
+            prev_real_saldo = saldo_final
 
     return df
     
