@@ -27,7 +27,7 @@ from parsers.supervielle import parse_pdf as parse_supervielle
 from parsers.supervielle2 import parse_pdf as parse_supervielle2
 from parsers.mercadopago import parse_pdf as parse_mp
 from parsers.credicoop import parse_pdf as parse_credicoop
-from parsers.bbva import parse_pdf as parse_bbva  # BBVA usa motor original 1:1
+from parsers.bbva import parse_pdf as parse_bbva
 from parsers.brubank import parse_pdf as parse_brubank
 
 # ====== UI ======
@@ -39,7 +39,6 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-/* ===== Labels más visibles ===== */
 label {
     color: #f2eaff !important;
     font-weight: 500;
@@ -56,7 +55,6 @@ label {
     color: #f2eaff !important;
 }
 
-/* ===== Ocultar barra superior de Streamlit ===== */
 header {visibility: hidden;}
 #MainMenu {visibility: hidden;}
 footer {visibility: hidden;}
@@ -69,7 +67,6 @@ footer {visibility: hidden;}
     display: none !important;
 }
 
-/* ===== Variables ===== */
 :root {
     --bg1:#0f071c;
     --bg2:#1a0f2b;
@@ -82,7 +79,6 @@ footer {visibility: hidden;}
     --accent3:#9b5cff;
 }
 
-/* ===== Fondo general ===== */
 html, body, .stApp {
     background:
         radial-gradient(1200px 600px at 20% -10%, #1b1030 0%, var(--bg1) 35%),
@@ -97,7 +93,6 @@ html, body, .stApp {
     max-width: 1100px;
 }
 
-/* ===== Hero ===== */
 .h-hero {
     display:flex;
     align-items:center;
@@ -141,13 +136,68 @@ html, body, .stApp {
     color:#cbb6f3;
 }
 
-.h-note {
-    font-size:14px;
-    opacity:.75;
+.note-wrap {
+    display:flex;
+    align-items:flex-start;
+    gap:10px;
     margin-bottom:14px;
 }
 
-/* ===== Card ===== */
+.h-note {
+    font-size:14px;
+    opacity:.92;
+    color:#e9dff9;
+}
+
+.help-box {
+    display:inline-block;
+}
+
+.help-box details {
+    position: relative;
+}
+
+.help-box summary {
+    list-style:none;
+    cursor:pointer;
+    width:24px;
+    height:24px;
+    border-radius:999px;
+    border:1px solid rgba(255,255,255,.16);
+    background: rgba(255,255,255,.06);
+    color:#f2eaff;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-weight:800;
+    user-select:none;
+}
+
+.help-box summary::-webkit-details-marker {
+    display:none;
+}
+
+.help-content {
+    position:absolute;
+    top:32px;
+    right:0;
+    width:420px;
+    max-width: min(420px, 80vw);
+    z-index:99;
+    background: #1b1030;
+    border:1px solid rgba(255,255,255,.10);
+    border-radius:14px;
+    padding:14px 16px;
+    box-shadow: 0 10px 30px rgba(0,0,0,.35);
+    color:#f2eaff;
+    font-size:14px;
+    line-height:1.5;
+}
+
+.help-content strong {
+    color:#ffffff;
+}
+
 .card {
     border:1px solid var(--stroke);
     background: var(--card);
@@ -156,7 +206,6 @@ html, body, .stApp {
     box-shadow: 0 10px 30px rgba(0,0,0,.35), inset 0 0 0 1px rgba(255,255,255,.02);
 }
 
-/* ===== Inputs base ===== */
 .stSelectbox > div > div,
 .stFileUploader > div {
     background: rgba(255,255,255,.06);
@@ -164,7 +213,6 @@ html, body, .stApp {
     border-radius: 12px;
 }
 
-/* ===== Selectbox banco ===== */
 .stSelectbox div[data-baseweb="select"] {
     background: rgba(255,255,255,0.06) !important;
     border-radius: 12px !important;
@@ -178,7 +226,6 @@ html, body, .stApp {
     fill: #cbb6f3 !important;
 }
 
-/* ===== Uploader oscuro ===== */
 [data-testid="stFileUploaderDropzone"] {
     background: rgba(255,255,255,.05) !important;
     border: 2px dashed rgba(255,255,255,.15) !important;
@@ -194,7 +241,6 @@ html, body, .stApp {
     background: transparent !important;
 }
 
-/* ===== Botón Browse files ===== */
 button[kind="secondary"] {
     background: rgba(255,255,255,0.08) !important;
     color: #ffffff !important;
@@ -215,7 +261,6 @@ button span {
     color: inherit !important;
 }
 
-/* ===== Checkboxes ===== */
 .stCheckbox > label,
 .stCheckbox > div > label {
     color: var(--ink) !important;
@@ -225,7 +270,6 @@ input[type="checkbox"] {
     accent-color: var(--accent3);
 }
 
-/* ===== Tabs ===== */
 .stTabs [data-baseweb="tab"] {
     color: var(--muted);
     font-weight: 600;
@@ -236,7 +280,6 @@ input[type="checkbox"] {
     border-bottom: 2px solid var(--accent1);
 }
 
-/* ===== Botones primarios ===== */
 .stButton > button {
     height: 48px;
     font-weight: 800;
@@ -252,7 +295,6 @@ input[type="checkbox"] {
     transform: translateY(-0.5px);
 }
 
-/* ===== Botón descargar ===== */
 .stDownloadButton button {
     background: linear-gradient(90deg,#ff3ea5,#ff7a5f 45%,#ffc53d 95%) !important;
     color: #1c102d !important;
@@ -265,13 +307,11 @@ input[type="checkbox"] {
     filter: brightness(1.05);
 }
 
-/* ===== Dataframes ===== */
 .stDataFrame {
     border-radius: 12px;
     overflow: hidden;
 }
 
-/* ===== Progreso ===== */
 .progress-wrap {
     margin: 10px 0 18px 0;
     padding: 12px 14px;
@@ -314,7 +354,6 @@ input[type="checkbox"] {
     opacity:.95;
 }
 
-/* ===== Autor ===== */
 .author {
     display:flex;
     justify-content:flex-end;
@@ -341,8 +380,26 @@ st.markdown("""
         <div class="h-sub">Convertidor de Extractos Bancarios</div>
     </div>
 </div>
-<div class="h-note">
-Elegí el banco y subí al menos un PDF. Configurá las opciones y convertí a Excel.
+
+<div class="note-wrap">
+    <div class="h-note">
+        Elegí el banco, cargá uno o más archivos PDF y convertí el extracto a Excel en pocos pasos.
+    </div>
+    <div class="help-box">
+        <details>
+            <summary>?</summary>
+            <div class="help-content">
+                <strong>Cómo procesar un extracto bancario</strong><br><br>
+                1. <strong>Seleccioná el banco</strong> que querés procesar. También podés usar <strong>AUTO</strong> para que la app intente detectarlo automáticamente.<br><br>
+                2. <strong>Cargá uno o varios archivos PDF</strong> del mismo banco.<br><br>
+                3. Elegí las opciones que quieras usar:<br>
+                • <strong>Línea en blanco entre archivos</strong>: inserta una fila vacía entre un archivo y otro cuando procesás más de un PDF.<br>
+                • <strong>Hacer Clasificacion</strong>: intenta clasificar automáticamente los movimientos del extracto de forma aproximada.<br><br>
+                4. Presioná <strong>Convertir a Excel</strong> y esperá a que finalice el procesamiento.<br><br>
+                5. Cuando termine, en la parte inferior aparecerá el botón <strong>Descargar Excel (NUMÉRICO)</strong> o su variante multihoja, según el banco procesado.
+            </div>
+        </details>
+    </div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -832,7 +889,7 @@ def fix_credicoop(df):
     return df
 
 def fix_bbva(df):
-    return df  # NO se usa (BBVA sale tal cual del parser individual)
+    return df
 
 def fix_brubank(df):
     return df
@@ -914,7 +971,6 @@ if files:
         st.error("Estos archivos superan el límite permitido:\n\n- " + "\n- ".join(too_big))
         st.stop()
 
-add_header = st.checkbox("Encabezado con nombre de archivo", value=True)
 add_blank = st.checkbox("Línea en blanco entre archivos", value=True)
 do_classification = st.checkbox("Hacer Clasificacion", value=True)
 
@@ -935,10 +991,36 @@ card.markdown('</div>', unsafe_allow_html=True)
 
 tab_prev, tab_log, tab_hist = st.tabs(["Vista previa", "Registro", "Historial"])
 
+if "history" not in st.session_state:
+    st.session_state.history = []
+
 logs: List[str] = []
 
 def _log(msg: str):
     logs.append(msg)
+
+def _add_history_entry(
+    bank_selected: str,
+    effective_bank: str,
+    files_names: List[str],
+    status: str,
+    rows_count: int,
+    output_name: str,
+):
+    st.session_state.history.insert(
+        0,
+        {
+            "Fecha": pd.Timestamp.now().strftime("%d/%m/%Y %H:%M"),
+            "Banco seleccionado": bank_selected,
+            "Banco procesado": effective_bank,
+            "Archivos": len(files_names),
+            "Archivos cargados": ", ".join(files_names[:5]) + (" ..." if len(files_names) > 5 else ""),
+            "Estado": status,
+            "Filas": rows_count,
+            "Salida": output_name,
+        }
+    )
+    st.session_state.history = st.session_state.history[:20]
 
 def _sort_rows_by_fecha(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -966,83 +1048,6 @@ def _render_progress(box, current: int, total: int, label: str, sublabel: str = 
         </div>
         """,
         unsafe_allow_html=True,
-    )
-
-def _friendly_error_info(error_text: str):
-    e = (error_text or "").lower()
-
-    if "openpyxl" in e:
-        return {
-            "titulo": "Falta una librería necesaria para la clasificación",
-            "causa": "La app intentó leer el archivo de clasificación Excel, pero no encontró la dependencia openpyxl.",
-            "solucion": "Verificá que openpyxl esté incluido en requirements.txt y que la app haya redeployado correctamente.",
-        }
-
-    if "no se pudo detectar automáticamente el banco" in e:
-        return {
-            "titulo": "No se pudo detectar el banco automáticamente",
-            "causa": "La opción AUTO no encontró un patrón claro en el PDF para identificar el banco.",
-            "solucion": "Elegí el banco manualmente desde el selector y volvé a procesar el archivo.",
-        }
-
-    if "tiempo de procesamiento excedido" in e:
-        return {
-            "titulo": "El archivo tardó demasiado en procesarse",
-            "causa": "El PDF puede ser muy grande, tener muchas páginas o requerir un análisis más pesado de lo normal.",
-            "solucion": "Probá procesar menos archivos a la vez, activar el Modo LARGO o dividir la tanda en partes más chicas.",
-        }
-
-    if "multiple banks" in e or "múltiples bancos" in e:
-        return {
-            "titulo": "Se detectaron varios bancos en una misma carga",
-            "causa": "La app encontró PDFs de distintos bancos dentro del mismo procesamiento.",
-            "solucion": "Separá los archivos por banco y procesá cada grupo por separado.",
-        }
-
-    if "maximo" in e or "máximo" in e or "supera" in e:
-        return {
-            "titulo": "La carga supera los límites permitidos",
-            "causa": "La cantidad de archivos o el peso total de la tanda es mayor al permitido por la app.",
-            "solucion": "Subí menos archivos por tanda o dividí la carga en varios procesos.",
-        }
-
-    if "permission" in e or "permiso" in e:
-        return {
-            "titulo": "Problema de permisos o acceso",
-            "causa": "La app no pudo acceder correctamente a un archivo o recurso requerido.",
-            "solucion": "Volvé a intentar el proceso y, si persiste, revisá que los archivos se hayan cargado bien.",
-        }
-
-    if "excel" in e and "clasif" in e:
-        return {
-            "titulo": "Problema al leer el archivo de clasificación",
-            "causa": "La app no pudo abrir o interpretar el Excel de clasificación de movimientos.",
-            "solucion": "Revisá que el archivo CLASIFICACION EXTRACTOS.xlsx esté bien subido y con el formato esperado.",
-        }
-
-    return {
-        "titulo": "Ocurrió un error al procesar el archivo",
-        "causa": "La app encontró un problema durante el análisis del PDF o la generación del Excel.",
-        "solucion": "Revisá el banco seleccionado, probá con menos archivos o consultá la pestaña Registro para ver el detalle técnico.",
-    }
-
-def _show_main_error(errors: List[str]):
-    if not errors:
-        return
-
-    first_error = errors[0]
-    info = _friendly_error_info(first_error)
-
-    st.error(
-        f"""**{info['titulo']}**
-
-**Posible causa:** {info['causa']}
-
-**Solución rápida:** {info['solucion']}
-
-**Detalle detectado:** `{first_error}`
-
-Para ver más información técnica, revisá la pestaña **Registro**."""
     )
 
 if do_convert:
@@ -1253,10 +1258,6 @@ if do_convert:
                         mind = _df_min_date(fin)
                         items.append((name, fin, mind, detected_bank))
 
-
-        if errors:
-            _show_main_error(errors)
-
         if errors and atomic_mode:
             progress_box.empty()
             tab_log.error("Se canceló la generación del Excel (modo atómico activo).")
@@ -1312,19 +1313,6 @@ if do_convert:
                 account_map: Dict[str, List[pd.DataFrame]] = {}
 
                 for name, fin, _mind, _detected_bank in sortable:
-                    if add_header:
-                        header = pd.DataFrame(
-                            [[pd.NaT, f"=== {name} ({effective_bank}) ===", "", 0.0, 0.0, 0.0]],
-                            columns=EXPECTED_COLS,
-                        )
-                        cuentas = (
-                            fin["Cuenta"].dropna().unique().tolist()
-                            if "Cuenta" in fin.columns
-                            else ["GENERAL"]
-                        )
-                        for cta in sorted(set(cuentas)):
-                            account_map.setdefault(str(cta), []).append(header)
-
                     if "Cuenta" in fin.columns:
                         for cta, chunk in fin.groupby(fin["Cuenta"].fillna("GENERAL"), sort=False):
                             chunk = chunk.drop(columns=[c for c in ["Cuenta"] if c in chunk.columns])
@@ -1366,26 +1354,32 @@ if do_convert:
                         ws.set_column("C:C", 28)
                         ws.set_column("D:F", 16, wb.add_format({"num_format": "0.00"}))
 
+                excel_name = f"EXTRACTOS_{effective_bank}.xlsx"
+
                 with tab_prev:
                     st.download_button(
                         "⬇️ Descargar Excel (NUMÉRICO, múltiples hojas por cuenta)",
                         data=buf.getvalue(),
-                        file_name=f"EXTRACTOS_{effective_bank}.xlsx",
+                        file_name=excel_name,
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         use_container_width=True,
                     )
+
+                total_rows = sum(len(_append_blocks(account_map[cta])) for cta in account_map.keys())
+
+                _add_history_entry(
+                    bank_selected=bank,
+                    effective_bank=effective_bank,
+                    files_names=[name for name, _, _, _ in sortable],
+                    status="OK",
+                    rows_count=total_rows,
+                    output_name=excel_name,
+                )
+
             else:
                 chunks = []
 
                 for name, fin, _mind, _detected_bank in sortable:
-                    if add_header:
-                        chunks.append(
-                            pd.DataFrame(
-                                [[pd.NaT, f"=== {name} ({effective_bank}) ===", "", 0.0, 0.0, 0.0]],
-                                columns=EXPECTED_COLS,
-                            )
-                        )
-
                     chunks.append(fin[EXPECTED_COLS])
 
                     if add_blank:
@@ -1402,29 +1396,41 @@ if do_convert:
                     st.subheader("Vista previa")
                     st.dataframe(result, use_container_width=True, height=480)
 
-                    buf = io.BytesIO()
-                    with pd.ExcelWriter(buf, engine="xlsxwriter", datetime_format="dd/mm/yyyy") as writer:
-                        result.to_excel(writer, index=False, sheet_name="Extractos")
+                buf = io.BytesIO()
+                with pd.ExcelWriter(buf, engine="xlsxwriter", datetime_format="dd/mm/yyyy") as writer:
+                    result.to_excel(writer, index=False, sheet_name="Extractos")
 
-                        wb = writer.book
-                        ws = writer.sheets["Extractos"]
+                    wb = writer.book
+                    ws = writer.sheets["Extractos"]
 
-                        if effective_bank == "SUPERVIELLE 2":
-                            ws.set_column("A:A", 18, wb.add_format({"num_format": "dd/mm/yyyy hh:mm"}))
-                        else:
-                            ws.set_column("A:A", 12, wb.add_format({"num_format": "dd/mm/yyyy"}))
+                    if effective_bank == "SUPERVIELLE 2":
+                        ws.set_column("A:A", 18, wb.add_format({"num_format": "dd/mm/yyyy hh:mm"}))
+                    else:
+                        ws.set_column("A:A", 12, wb.add_format({"num_format": "dd/mm/yyyy"}))
 
-                        ws.set_column("B:B", 90)
-                        ws.set_column("C:C", 28)
-                        ws.set_column("D:F", 16, wb.add_format({"num_format": "0.00"}))
+                    ws.set_column("B:B", 90)
+                    ws.set_column("C:C", 28)
+                    ws.set_column("D:F", 16, wb.add_format({"num_format": "0.00"}))
 
+                excel_name = f"EXTRACTOS_{effective_bank}.xlsx"
+
+                with tab_prev:
                     st.download_button(
                         "⬇️ Descargar Excel (NUMÉRICO)",
                         data=buf.getvalue(),
-                        file_name=f"EXTRACTOS_{effective_bank}.xlsx",
+                        file_name=excel_name,
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         use_container_width=True,
                     )
+
+                _add_history_entry(
+                    bank_selected=bank,
+                    effective_bank=effective_bank,
+                    files_names=[name for name, _, _, _ in sortable],
+                    status="OK",
+                    rows_count=len(result),
+                    output_name=excel_name,
+                )
 
         with tab_log:
             if logs:
@@ -1437,6 +1443,31 @@ if do_convert:
                 for e in errors:
                     st.write("• " + e)
 
+        with tab_hist:
+            st.subheader("Historial de esta sesión")
+
+            if st.session_state.history:
+                df_hist = pd.DataFrame(st.session_state.history)
+                st.dataframe(df_hist, use_container_width=True, height=320)
+            else:
+                st.info("Todavía no hay procesamientos registrados.")
+
+with tab_hist:
+    if not do_convert:
+        st.subheader("Historial de esta sesión")
+
+        if st.session_state.history:
+            df_hist = pd.DataFrame(st.session_state.history)
+            st.dataframe(df_hist, use_container_width=True, height=320)
+        else:
+            st.info("Todavía no hay procesamientos registrados.")
+
+with tab_log:
+    if not do_convert and logs:
+        st.subheader("Registro")
+        for line in logs:
+            st.write(line)
+
 st.markdown("""
 <div class="author">
   <div>
@@ -1445,7 +1476,6 @@ st.markdown("""
   </div>
 </div>
 """, unsafe_allow_html=True)
-
 
 
 
