@@ -1033,125 +1033,8 @@ def fix_credicoop(df):
     return df
 
 def fix_bbva(df):
-    df = df.copy()
-
-    if df.empty:
-        df.attrs["bbva_repairs"] = 0
-        return df
-
-    for c in ["Descripción", "Débito", "Crédito", "Saldo"]:
-        if c not in df.columns:
-            if c == "Descripción":
-                df[c] = ""
-            else:
-                df[c] = 0.0
-
-    df["Descripción"] = df["Descripción"].astype(str).fillna("")
-    df["Débito"] = df["Débito"].apply(_coerce_number)
-    df["Crédito"] = df["Crédito"].apply(_coerce_number)
-    df["Saldo"] = df["Saldo"].apply(_coerce_number)
-
-    trailing_amt_re = re.compile(
-        r"^(.*?)([-+]?\s*\$?\s*(?:\d{1,3}(?:\.\d{3})+|\d+)(?:,\d{2})(?:-)?)\s*$"
-    )
-
-    repairs = 0
-    prev_real_saldo = None
-
-    for i, row in df.iterrows():
-        desc = str(row["Descripción"]).strip()
-        deb = float(row["Débito"] or 0.0)
-        cred = float(row["Crédito"] or 0.0)
-        saldo = float(row["Saldo"] or 0.0)
-
-        m = trailing_amt_re.match(desc)
-
-        # CASO PRINCIPAL BBVA:
-        # saldo viene en Crédito y Saldo queda en cero
-        if cred > 0.0 and saldo == 0.0:
-            saldo_real = cred
-            deb_real = deb
-            cred_real = 0.0
-            desc_real = desc
-
-            if m:
-                desc_base = m.group(1).rstrip(" -—•:")
-                amt_txt = m.group(2)
-                amt_val = _coerce_number(amt_txt)
-
-                if amt_val < 0:
-                    deb_real = abs(amt_val)
-                    cred_real = 0.0
-                elif amt_val > 0:
-                    cred_real = abs(amt_val)
-                    deb_real = 0.0
-
-                desc_real = desc_base
-
-                df.at[i, "Descripción"] = desc_real
-                df.at[i, "Débito"] = round(deb_real, 2)
-                df.at[i, "Crédito"] = round(cred_real, 2)
-                df.at[i, "Saldo"] = round(saldo_real, 2)
-                repairs += 1
-                prev_real_saldo = saldo_real
-                continue
-
-            # Si no hay monto pegado en descripción, inferir por delta de saldo
-            if prev_real_saldo is not None:
-                delta = saldo_real - prev_real_saldo
-
-                if abs(delta) >= 0.004:
-                    if delta > 0:
-                        cred_real = abs(delta)
-                        deb_real = 0.0
-                    else:
-                        deb_real = abs(delta)
-                        cred_real = 0.0
-
-                    df.at[i, "Débito"] = round(deb_real, 2)
-                    df.at[i, "Crédito"] = round(cred_real, 2)
-                    df.at[i, "Saldo"] = round(saldo_real, 2)
-                    repairs += 1
-                    prev_real_saldo = saldo_real
-                    continue
-
-        # Actualizar saldo previo si vino bien
-        saldo_final = float(df.at[i, "Saldo"] or 0.0)
-        if saldo_final != 0.0:
-            prev_real_saldo = saldo_final
-
-    df.attrs["bbva_repairs"] = repairs
-    # -------------------------------------------------
-    # REPARACIÓN FINAL POR DELTA DE SALDO (BBVA)
-    # -------------------------------------------------
-    prev_saldo = None
-
-    for i, row in df.iterrows():
-
-        deb = float(row["Débito"] or 0.0)
-        cred = float(row["Crédito"] or 0.0)
-        saldo = float(row["Saldo"] or 0.0)
-
-        if saldo == 0:
-            continue
-
-        if prev_saldo is not None:
-
-            delta = saldo - prev_saldo
-
-            # Si el delta no coincide con débito/crédito actual
-            if abs(delta - cred) > 0.01 and abs(delta + deb) > 0.01:
-
-                if delta > 0:
-                    df.at[i, "Crédito"] = round(delta, 2)
-                    df.at[i, "Débito"] = 0.0
-                else:
-                    df.at[i, "Débito"] = round(abs(delta), 2)
-                    df.at[i, "Crédito"] = 0.0
-
-        prev_saldo = saldo
     return df
-    
+   
 def fix_brubank(df):
     return df
 
@@ -1468,29 +1351,15 @@ if do_convert:
                 
                 if detected_bank == "BBVA":
                     if isinstance(raw, pd.DataFrame):
-                        fin = raw.copy()
+                        fin = raw
                     else:
                         try:
                             fin = pd.DataFrame(raw)
                         except Exception:
                             fin = pd.DataFrame(columns=EXPECTED_COLS)
-
-                    fin = _normalize_df(fin)
-                    fin = fix_bbva(fin)
-                    
-                    _log(f"BBVA fix ejecutado: {fin.attrs.get('bbva_repairs', 0)} fila(s) reparada(s)")
-
-                    if do_classification:
-                        fin = _apply_classification(fin, detected_bank)
-
-                    fin = _ensure_columns_for_export(fin)
-
                 else:
                     mid = _normalize_df(raw)
-                    fin = _normalize_df(FIXES[detected_bank](mid))
-
-                    if do_classification:
-                        fin = _apply_classification(fin, detected_bank)                
+                    fin = _normalize_df(FIXES[detected_bank](mid))              
                     
                     if detected_bank != "SUPERVIELLE 2":
                         fin = _sort_rows_by_fecha(fin)
