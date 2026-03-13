@@ -1,6 +1,3 @@
-# parsers/bbva.py
-# Wrapper para usar SIN CAMBIAR NADA tu process_bbva_v2.py
-
 from __future__ import annotations
 
 import importlib
@@ -11,11 +8,16 @@ import tempfile
 from typing import Dict, List
 
 import pandas as pd
+
+
+# ---------------- Carga del módulo V2 (sin modificarlo) ----------------
 def _try_import_by_name(modname: str):
     try:
         return importlib.import_module(modname)
     except Exception:
         return None
+
+
 def _try_import_by_path(path: str, modname: str):
     if not os.path.isfile(path):
         return None
@@ -27,20 +29,23 @@ def _try_import_by_path(path: str, modname: str):
     m = importlib.util.module_from_spec(spec)
 
     try:
-        spec.loader.exec_module(m)
+        spec.loader.exec_module(m)  # type: ignore[attr-defined]
         sys.modules[modname] = m
         return m
     except Exception:
         return None
-def _load_v2_module():
 
+
+def _load_v2_module():
+    # A) import por nombre
     for name in ("process_bbva_v2", "parsers.process_bbva_v2"):
         m = _try_import_by_name(name)
         if m:
             return m
 
-    here = os.path.dirname(os.path.abspath(__file__))
-    root = os.path.dirname(here)
+    # B) import por ruta
+    here = os.path.dirname(os.path.abspath(__file__))  # .../parsers
+    root = os.path.dirname(here)  # raíz del proyecto
 
     candidates = [
         os.path.join(root, "process_bbva_v2.py"),
@@ -53,32 +58,74 @@ def _load_v2_module():
             return m
 
     raise ModuleNotFoundError(
-        "No se encontró 'process_bbva_v2.py'."
+        "No se encontró 'process_bbva_v2.py'. Colocalo en la raíz del proyecto o dentro de 'parsers/'."
     )
-def parse_pdf(file_bytes: bytes) -> pd.DataFrame:
 
-    tmp = tempfile.NamedTemporaryFile(
-        prefix="bbva_",
-        suffix=".pdf",
-        delete=False
+
+_mod = _load_v2_module()
+
+_HAS_PARSE_V2 = hasattr(_mod, "parse_bbva_pdf") and callable(getattr(_mod, "parse_bbva_pdf"))
+_HAS_PROCESS_V2 = hasattr(_mod, "process_bbva") and callable(getattr(_mod, "process_bbva"))
+
+if not (_HAS_PARSE_V2 or _HAS_PROCESS_V2):
+    raise RuntimeError(
+        "Tu 'process_bbva_v2.py' no expone ni 'parse_bbva_pdf' ni 'process_bbva'. "
+        "Debe existir al menos una de esas funciones (como en tu app individual)."
     )
+
+
+# ---------------- Helpers ----------------
+def _dict_to_df(sheets: Dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """
+    Convierte dict{cuenta -> DataFrame} a un único DataFrame con columna 'Cuenta'.
+    No normaliza ni modifica valores.
+    """
+    frames: List[pd.DataFrame] = []
+
+    for cuenta, df in (sheets or {}).items():
+        if df is None or df.empty:
+            continue
+
+        tmp = df.copy()
+        if "Cuenta" not in tmp.columns:
+            tmp["Cuenta"] = str(cuenta)
+
+        frames.append(tmp)
+
+    if not frames:
+        return pd.DataFrame(columns=["Fecha", "Descripción", "Débito", "Crédito", "Saldo", "Cuenta"])
+
+    out = pd.concat(frames, ignore_index=True)
+    cols = [c for c in ["Fecha", "Descripción", "Débito", "Crédito", "Saldo", "Cuenta"] if c in out.columns]
+    return out[cols] if cols else out
+
+
+# ---------------- API usada por app_unica.py ----------------
+def parse_pdf(file_bytes: bytes) -> pd.DataFrame:
+    """
+    Entrada para la app unificada:
+      - Recibe BYTES del PDF
+      - Escribe un temporal (cerrándolo antes de leer) para evitar errores en Windows
+      - Invoca tu V2 (parse_bbva_pdf o process_bbva)
+      - Devuelve UN DataFrame con 'Cuenta'
+    """
+    tmp = tempfile.NamedTemporaryFile(prefix="bbva_", suffix=".pdf", delete=False)
 
     try:
         tmp.write(file_bytes)
         tmp.flush()
         tmp_path = tmp.name
-
     finally:
-        tmp.close()
+        try:
+            tmp.close()
+        except Exception:
+            pass
 
     try:
-
-        if hasattr(_mod, "parse_bbva_pdf"):
+        if _HAS_PARSE_V2:
             sheets = _mod.parse_bbva_pdf(tmp_path)
-
         else:
             sheets = _mod.process_bbva([tmp_path])
-
     finally:
         try:
             os.remove(tmp_path)
