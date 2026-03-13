@@ -1033,8 +1033,52 @@ def fix_credicoop(df):
     return df
 
 def fix_bbva(df):
-    return df
 
+    df = df.copy()
+
+    if df.empty:
+        return df
+
+    df["Descripción"] = df["Descripción"].astype(str)
+
+    df["Débito"] = df["Débito"].apply(_coerce_number)
+    df["Crédito"] = df["Crédito"].apply(_coerce_number)
+    df["Saldo"] = df["Saldo"].apply(_coerce_number)
+
+    trailing_amt = re.compile(
+        r"(.*?)([-+]?\s*\$?\s*(?:\d{1,3}(?:\.\d{3})+|\d+)(?:,\d{2})(?:-)?)\s*$"
+    )
+
+    for i, row in df.iterrows():
+
+        desc = str(row["Descripción"])
+        deb = float(row["Débito"])
+        cred = float(row["Crédito"])
+        saldo = row["Saldo"]
+
+        # detectar monto pegado a la descripción
+        m = trailing_amt.match(desc)
+
+        if m and deb == 0 and cred != 0 and (pd.isna(saldo) or saldo == 0):
+
+            desc_base = m.group(1).strip()
+            monto_txt = m.group(2)
+
+            monto = _coerce_number(monto_txt)
+
+            # el crédito en realidad era el saldo
+            df.at[i, "Saldo"] = cred
+            df.at[i, "Crédito"] = 0.0
+
+            if monto < 0:
+                df.at[i, "Débito"] = abs(monto)
+            else:
+                df.at[i, "Crédito"] = abs(monto)
+
+            df.at[i, "Descripción"] = desc_base
+
+    return df
+    
 def fix_brubank(df):
     return df
 
