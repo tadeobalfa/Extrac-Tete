@@ -1050,6 +1050,83 @@ def _render_progress(box, current: int, total: int, label: str, sublabel: str = 
         unsafe_allow_html=True,
     )
 
+def _friendly_error_info(error_text: str):
+    e = (error_text or "").lower()
+
+    if "openpyxl" in e:
+        return {
+            "titulo": "Falta una librería necesaria para la clasificación",
+            "causa": "La app intentó leer el archivo de clasificación Excel, pero no encontró la dependencia openpyxl.",
+            "solucion": "Verificá que openpyxl esté incluido en requirements.txt y que la app haya redeployado correctamente.",
+        }
+
+    if "no se pudo detectar automáticamente el banco" in e:
+        return {
+            "titulo": "No se pudo detectar el banco automáticamente",
+            "causa": "La opción AUTO no encontró un patrón claro en el PDF para identificar el banco.",
+            "solucion": "Elegí el banco manualmente desde el selector y volvé a procesar el archivo.",
+        }
+
+    if "tiempo de procesamiento excedido" in e:
+        return {
+            "titulo": "El archivo tardó demasiado en procesarse",
+            "causa": "El PDF puede ser muy grande, tener muchas páginas o requerir un análisis más pesado de lo normal.",
+            "solucion": "Probá procesar menos archivos a la vez, activar el Modo LARGO o dividir la tanda en partes más chicas.",
+        }
+
+    if "multiple banks" in e or "múltiples bancos" in e:
+        return {
+            "titulo": "Se detectaron varios bancos en una misma carga",
+            "causa": "La app encontró PDFs de distintos bancos dentro del mismo procesamiento.",
+            "solucion": "Separá los archivos por banco y procesá cada grupo por separado.",
+        }
+
+    if "maximo" in e or "máximo" in e or "supera" in e:
+        return {
+            "titulo": "La carga supera los límites permitidos",
+            "causa": "La cantidad de archivos o el peso total de la tanda es mayor al permitido por la app.",
+            "solucion": "Subí menos archivos por tanda o dividí la carga en varios procesos.",
+        }
+
+    if "permission" in e or "permiso" in e:
+        return {
+            "titulo": "Problema de permisos o acceso",
+            "causa": "La app no pudo acceder correctamente a un archivo o recurso requerido.",
+            "solucion": "Volvé a intentar el proceso y, si persiste, revisá que los archivos se hayan cargado bien.",
+        }
+
+    if "excel" in e and "clasif" in e:
+        return {
+            "titulo": "Problema al leer el archivo de clasificación",
+            "causa": "La app no pudo abrir o interpretar el Excel de clasificación de movimientos.",
+            "solucion": "Revisá que el archivo CLASIFICACION EXTRACTOS.xlsx esté bien subido y con el formato esperado.",
+        }
+
+    return {
+        "titulo": "Ocurrió un error al procesar el archivo",
+        "causa": "La app encontró un problema durante el análisis del PDF o la generación del Excel.",
+        "solucion": "Revisá el banco seleccionado, probá con menos archivos o consultá la pestaña Registro para ver el detalle técnico.",
+    }
+
+def _show_main_error(errors: List[str]):
+    if not errors:
+        return
+
+    first_error = errors[0]
+    info = _friendly_error_info(first_error)
+
+    st.error(
+        f"""**{info['titulo']}**
+
+**Posible causa:** {info['causa']}
+
+**Solución rápida:** {info['solucion']}
+
+**Detalle detectado:** `{first_error}`
+
+Para ver más información técnica, revisá la pestaña **Registro**."""
+    )
+    
 if do_convert:
     if not files:
         st.warning("Subí al menos un PDF.")
@@ -1258,6 +1335,9 @@ if do_convert:
                         mind = _df_min_date(fin)
                         items.append((name, fin, mind, detected_bank))
 
+        if errors:
+            _show_main_error(errors)
+            
         if errors and atomic_mode:
             progress_box.empty()
             tab_log.error("Se canceló la generación del Excel (modo atómico activo).")
@@ -1476,6 +1556,7 @@ st.markdown("""
   </div>
 </div>
 """, unsafe_allow_html=True)
+
 
 
 
