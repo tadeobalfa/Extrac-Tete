@@ -28,8 +28,8 @@ def _load_v2_module():
         raise RuntimeError(f"No se pudo cargar spec de {target}")
 
     m = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(m)  # type: ignore[attr-defined]
     sys.modules[modname] = m
+    spec.loader.exec_module(m)  # type: ignore[attr-defined]
 
     print(f"DEBUG BBVA usando parser: {target}")
     return m
