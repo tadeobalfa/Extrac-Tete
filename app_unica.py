@@ -655,11 +655,6 @@ def _get_bank_rules_with_fallback(bank: str, rules_pack: dict) -> List[dict]:
 
     return merged
 
-logs: List[str] = []
-
-def _log(msg: str):
-    logs.append(msg)
-
 def _classify_row(bank: str, descripcion: str, debito: float, credito: float, rules_pack: dict) -> str:
     desc = _norm_text(descripcion)
     if not desc:
@@ -745,6 +740,34 @@ def _apply_classification(df: pd.DataFrame, bank: str) -> pd.DataFrame:
 
     df["Clasificacion"] = clasifs
     return df
+
+def _ensure_columns_for_export(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+
+    rename = {}
+    for col in df.columns:
+        low = str(col).strip().lower()
+        if low in {"descripcion completa", "descripción completa"}:
+            rename[col] = "Descripción"
+        elif low == "clasificacion":
+            rename[col] = "Clasificacion"
+    if rename:
+        df = df.rename(columns=rename)
+
+    if "Clasificacion" not in df.columns:
+        df["Clasificacion"] = ""
+
+    for c in EXPECTED_COLS:
+        if c not in df.columns:
+            if c in {"Débito", "Crédito", "Saldo"}:
+                df[c] = 0.0
+            else:
+                df[c] = ""
+
+    if "Cuenta" in df.columns:
+        return df[EXPECTED_COLS + ["Cuenta"]]
+
+    return df[EXPECTED_COLS]
 
 def _bytes_hash(b: bytes) -> str:
     return hashlib.md5(b).hexdigest()
@@ -843,6 +866,12 @@ def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
     )
     return df[mask].reset_index(drop=True)
 
+MES_MAP = {
+    "enero": 1, "febrero": 2, "marzo": 3, "abril": 4, "mayo": 5, "junio": 6,
+    "julio": 7, "agosto": 8, "septiembre": 9, "setiembre": 9, "octubre": 10,
+    "noviembre": 11, "diciembre": 12
+}
+
 def _ensure_columns_for_export(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
 
@@ -850,8 +879,6 @@ def _ensure_columns_for_export(df: pd.DataFrame) -> pd.DataFrame:
     for col in df.columns:
         low = str(col).strip().lower()
         if low in {"descripcion completa", "descripción completa"}:
-            rename[col] = "Descripción"
-        elif low in {"descripcion", "descripción"}:
             rename[col] = "Descripción"
         elif low in {"debito", "débito"}:
             rename[col] = "Débito"
@@ -863,8 +890,6 @@ def _ensure_columns_for_export(df: pd.DataFrame) -> pd.DataFrame:
             rename[col] = "Fecha"
         elif low == "cuenta":
             rename[col] = "Cuenta"
-        elif low == "clasificacion":
-            rename[col] = "Clasificacion"
 
     if rename:
         df = df.rename(columns=rename)
@@ -880,12 +905,6 @@ def _ensure_columns_for_export(df: pd.DataFrame) -> pd.DataFrame:
         return df[EXPECTED_COLS + ["Cuenta"]]
 
     return df[EXPECTED_COLS]
-
-MES_MAP = {
-    "enero": 1, "febrero": 2, "marzo": 3, "abril": 4, "mayo": 5, "junio": 6,
-    "julio": 7, "agosto": 8, "septiembre": 9, "setiembre": 9, "octubre": 10,
-    "noviembre": 11, "diciembre": 12
-}
 
 def _infer_period_from_filename(name: str):
     s = name.lower().replace("_", " ").replace("-", " ").replace(".", " ").replace("/", " ")
@@ -1053,6 +1072,7 @@ def fix_bbva(df):
     if df.empty:
         return df
 
+    # asegurar columnas
     for c in ["Descripción", "Débito", "Crédito", "Saldo"]:
         if c not in df.columns:
             if c == "Descripción":
@@ -1077,6 +1097,8 @@ def fix_bbva(df):
         cred = float(row["Crédito"] or 0.0)
         saldo = float(row["Saldo"] or 0.0)
 
+        # Caso roto BBVA:
+        # saldo viene en Crédito y Saldo queda en 0
         if saldo == 0.0 and cred > 0.0:
             saldo_real = cred
             deb_real = 0.0
@@ -1085,6 +1107,7 @@ def fix_bbva(df):
 
             m = trailing_amt_re.match(desc)
 
+            # 1) Si el importe viene pegado al final de la descripción
             if m:
                 desc_base = m.group(1).rstrip(" -—•:")
                 amt_txt = m.group(2)
@@ -1099,6 +1122,7 @@ def fix_bbva(df):
                     cred_real = abs(amt_val)
                     deb_real = 0.0
 
+            # 2) Si NO viene importe en descripción, inferir por delta de saldo
             elif prev_saldo is not None:
                 delta = saldo_real - prev_saldo
 
@@ -1111,6 +1135,7 @@ def fix_bbva(df):
                         cred_real = 0.0
 
             else:
+                # sin saldo previo no podemos inferir bien
                 prev_saldo = saldo_real
                 df.at[i, "Saldo"] = saldo_real
                 df.at[i, "Crédito"] = 0.0
@@ -1124,11 +1149,12 @@ def fix_bbva(df):
             prev_saldo = saldo_real
             continue
 
+        # si la fila ya vino bien
         if saldo != 0.0:
             prev_saldo = saldo
 
     return df
-
+    
 def fix_brubank(df):
     return df
 
@@ -1233,6 +1259,11 @@ tab_prev, tab_log, tab_hist = st.tabs(["Vista previa", "Registro", "Historial"])
 
 if "history" not in st.session_state:
     st.session_state.history = []
+
+logs: List[str] = []
+
+def _log(msg: str):
+    logs.append(msg)
 
 def _add_history_entry(
     bank_selected: str,
@@ -1357,14 +1388,12 @@ def _show_main_error(errors: List[str]):
 
 **Solución rápida:** {info['solucion']}
 
-**Detalle detectado:** {first_error}
+**Detalle detectado:** `{first_error}`
 
 Para ver más información técnica, revisá la pestaña **Registro**."""
     )
 
 if do_convert:
-    logs.clear()
-
     if not files:
         st.warning("Subí al menos un PDF.")
     else:
@@ -1431,37 +1460,29 @@ if do_convert:
                 if not detected_bank:
                     raise ValueError(f"No se pudo detectar automáticamente el banco de {name}")
 
-            raw = _run_with_timeout(
-                _cached_parse,
-                detected_bank,
-                _bytes_hash(data),
-                data,
-                timeout=timeout_sec,
-            )
-
-            if isinstance(raw, pd.DataFrame):
-                fin = raw.copy()
-            else:
-                try:
-                    fin = pd.DataFrame(raw)
-                except Exception:
-                    fin = pd.DataFrame(columns=EXPECTED_COLS)
-
-            fin = _normalize_df(fin)
-            fin = _ensure_columns_for_export(fin)
-
-            if detected_bank in FIXES:
-                fin = FIXES[detected_bank](fin)
-
-            fin = _ensure_columns_for_export(fin)
-
-            if do_classification:
-                fin = _apply_classification(fin, detected_bank)
-                fin = _ensure_columns_for_export(fin)
-
-            # BBVA y SUPERVIELLE 2 conservan orden original del parser
-            if detected_bank not in {"BBVA", "SUPERVIELLE 2"}:
-                fin = _sort_rows_by_fecha(fin)
+            with st.spinner(f"Procesando {name} para {detected_bank}…"):
+                raw = _run_with_timeout(
+                    _cached_parse,
+                    detected_bank,
+                    _bytes_hash(data),
+                    data,
+                    timeout=timeout_sec,
+                )
+                
+                if bank == "BBVA":
+                    if isinstance(raw, pd.DataFrame):
+                        fin = raw.copy()
+                    else:
+                        try:
+                            fin = pd.DataFrame(raw)
+                        except Exception:
+                            fin = pd.DataFrame(columns=EXPECTED_COLS)
+                            
+                    fin = _ensure_columns_for_export(fin)
+                    fin = fix_bbva(fin)            
+                    
+                    if detected_bank != "SUPERVIELLE 2":
+                        fin = _sort_rows_by_fecha(fin)
 
             _log(f"✓ {name}: {detected_bank} | {len(fin)} filas en {time.time() - t0:.1f}s")
             return fin, detected_bank
@@ -1797,3 +1818,7 @@ st.markdown("""
   </div>
 </div>
 """, unsafe_allow_html=True)
+
+
+
+
