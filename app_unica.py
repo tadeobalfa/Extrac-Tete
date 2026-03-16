@@ -1073,87 +1073,138 @@ def fix_bbva(df):
         return df
 
     # asegurar columnas
-    for c in ["Descripción", "Débito", "Crédito", "Saldo"]:
+    for c in ["Fecha", "Descripción", "Débito", "Crédito", "Saldo"]:
         if c not in df.columns:
-            if c == "Descripción":
+            if c == "Fecha":
+                df[c] = pd.NaT
+            elif c == "Descripción":
                 df[c] = ""
             else:
                 df[c] = 0.0
 
+    df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce")
     df["Descripción"] = df["Descripción"].astype(str).fillna("")
     df["Débito"] = df["Débito"].apply(_coerce_number)
     df["Crédito"] = df["Crédito"].apply(_coerce_number)
     df["Saldo"] = df["Saldo"].apply(_coerce_number)
 
+    # Solo tocar esta cuenta. El resto queda exactamente igual.
+    target_account = "CC $ 084-335800-9"
+
+    if "Cuenta" not in df.columns:
+        # si por alguna razón no viene Cuenta, no tocar nada
+        return df
+
     trailing_amt_re = re.compile(
         r"^(.*?)([-+]?\s*\$?\s*(?:\d{1,3}(?:\.\d{3})+|\d+)(?:,\d{2})(?:-)?)\s*$"
     )
 
-    prev_saldo = None
+    aux_markers = (
+        "FECHA DE EMISION FECHA DE PAGO NRO DE CHEQUE",
+        "FECHA DE EMISIÓN FECHA DE PAGO NRO DE CHEQUE",
+        "MOVIMIENTOS PENDIENTES DE DEBITAR",
+        "TRANSFERENCIAS",
+        "RECIBIDAS (INFORMACION AL",
+        "RECIBIDAS (INFORMACIÓN AL",
+        "CUENTA ORIGEN",
+        "NRO DE CHEQUE",
+        "INFORMACION AL FECHA DE EMISION",
+        "INFORMACIÓN AL FECHA DE EMISIÓN",
+    )
 
-    for i, row in df.iterrows():
-        desc = str(row["Descripción"]).strip()
-        deb = float(row["Débito"] or 0.0)
-        cred = float(row["Crédito"] or 0.0)
-        saldo = float(row["Saldo"] or 0.0)
+    result_chunks = []
 
-        # Caso roto BBVA:
-        # saldo viene en Crédito y Saldo queda en 0
-        if saldo == 0.0 and cred > 0.0:
-            saldo_real = cred
-            deb_real = 0.0
-            cred_real = 0.0
-            desc_real = desc
+    for cuenta, chunk in df.groupby("Cuenta", sort=False):
+        # cuentas distintas a la problemática: no tocar
+        if str(cuenta).strip() != target_account:
+            result_chunks.append(chunk)
+            continue
 
+        chunk = chunk.reset_index(drop=True).copy()
+        fixed_rows = []
+
+        prev_good_saldo = None
+        prev_good_date = None
+        in_aux_block = False
+
+        for _, row in chunk.iterrows():
+            fecha = row["Fecha"]
+            desc = str(row["Descripción"]).strip()
+            up = desc.upper()
+            deb = float(row["Débito"] or 0.0)
+            cred = float(row["Crédito"] or 0.0)
+            saldo = float(row["Saldo"] or 0.0)
+
+            # -------------------------------------------------
+            # 1) Cortar bloque auxiliar mal parseado
+            # -------------------------------------------------
+            if any(m in up for m in aux_markers):
+                in_aux_block = True
+                continue
+
+            if in_aux_block:
+                # volver a aceptar filas cuando reaparece una secuencia temporal lógica
+                if pd.notna(fecha) and prev_good_date is not None:
+                    delta_days = abs((fecha - prev_good_date).days)
+                    if delta_days <= 90:
+                        in_aux_block = False
+                    else:
+                        continue
+                else:
+                    continue
+
+            # -------------------------------------------------
+            # 2) Reparar filas rotas:
+            #    - importe quedó al final de la descripción
+            #    - crédito contiene el saldo real
+            #    - saldo quedó descontrolado
+            # -------------------------------------------------
             m = trailing_amt_re.match(desc)
-
-            # 1) Si el importe viene pegado al final de la descripción
-            if m:
+            if m and prev_good_saldo is not None:
                 desc_base = m.group(1).rstrip(" -—•:")
                 amt_txt = m.group(2)
                 amt_val = _coerce_number(amt_txt)
 
-                desc_real = desc_base
+                deb_fix = abs(amt_val) if amt_val < 0 else 0.0
+                cred_fix = abs(amt_val) if amt_val > 0 else 0.0
+                expected_saldo = round(prev_good_saldo - deb_fix + cred_fix, 2)
 
-                if amt_val < 0:
-                    deb_real = abs(amt_val)
-                    cred_real = 0.0
-                elif amt_val > 0:
-                    cred_real = abs(amt_val)
-                    deb_real = 0.0
+                # señales de fila rota:
+                # - el crédito actual coincide con el saldo esperado
+                # - o el saldo actual es absurdamente grande respecto al esperado
+                credit_is_expected_saldo = abs(cred - expected_saldo) <= 0.05
+                saldo_is_absurd = abs(saldo) > max(abs(expected_saldo) * 3, 5_000_000)
 
-            # 2) Si NO viene importe en descripción, inferir por delta de saldo
-            elif prev_saldo is not None:
-                delta = saldo_real - prev_saldo
+                if credit_is_expected_saldo or saldo_is_absurd:
+                    desc = desc_base
+                    deb = deb_fix
+                    cred = cred_fix
+                    saldo = expected_saldo
 
-                if abs(delta) >= 0.004:
-                    if delta > 0:
-                        cred_real = round(delta, 2)
-                        deb_real = 0.0
-                    else:
-                        deb_real = round(abs(delta), 2)
-                        cred_real = 0.0
+            fixed_row = row.copy()
+            fixed_row["Descripción"] = desc
+            fixed_row["Débito"] = round(deb, 2)
+            fixed_row["Crédito"] = round(cred, 2)
+            fixed_row["Saldo"] = round(saldo, 2)
 
-            else:
-                # sin saldo previo no podemos inferir bien
-                prev_saldo = saldo_real
-                df.at[i, "Saldo"] = saldo_real
-                df.at[i, "Crédito"] = 0.0
-                continue
+            fixed_rows.append(fixed_row)
 
-            df.at[i, "Descripción"] = desc_real
-            df.at[i, "Débito"] = round(deb_real, 2)
-            df.at[i, "Crédito"] = round(cred_real, 2)
-            df.at[i, "Saldo"] = round(saldo_real, 2)
+            if pd.notna(fecha):
+                prev_good_date = fecha
 
-            prev_saldo = saldo_real
-            continue
+            prev_good_saldo = float(fixed_row["Saldo"])
 
-        # si la fila ya vino bien
-        if saldo != 0.0:
-            prev_saldo = saldo
+        if fixed_rows:
+            fixed_chunk = pd.DataFrame(fixed_rows)
+        else:
+            fixed_chunk = chunk.iloc[0:0].copy()
 
-    return df
+        result_chunks.append(fixed_chunk)
+
+    if not result_chunks:
+        return df.iloc[0:0].copy()
+
+    return pd.concat(result_chunks, ignore_index=True)
     
 def fix_brubank(df):
     return df
