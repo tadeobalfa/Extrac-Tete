@@ -1109,6 +1109,18 @@ def fix_bbva(df):
         "NRO DE CHEQUE",
         "INFORMACION AL FECHA DE EMISION",
         "INFORMACIÓN AL FECHA DE EMISIÓN",
+        "CHEQUES ELECTRONICOS INFORMACION AL",
+        "CHEQUES ELECTRÓNICOS INFORMACIÓN AL",
+        "LEGALES Y AVISOS",
+        "IMPUESTO A LOS DEBITOS Y CREDITOS",
+        "IMPUESTO A LOS DÉBITOS Y CRÉDITOS",
+        "REGIMEN SISTEMA SIRCREB",
+        "RÉGIMEN SISTEMA SIRCREB",
+        "TOTAL COBRADO",
+        "TOTAL DEV.",
+        "IMP. NETO",
+        "EL CREDITO DE IMPUESTO SUSCEPTIBLE",
+        "EL CRÉDITO DE IMPUESTO SUSCEPTIBLE",
     )
 
     result_chunks = []
@@ -1141,15 +1153,32 @@ def fix_bbva(df):
                 continue
 
             if in_aux_block:
+                # Mientras estemos dentro de un bloque auxiliar, solo salimos
+                # si reaparece una fila con pinta real de movimiento bancario.
                 if pd.notna(fecha) and prev_good_date is not None:
                     delta_days = abs((fecha - prev_good_date).days)
-                    if delta_days <= 90:
+
+                    looks_like_real_movement = (
+                        delta_days <= 90
+                        and not any(m in up for m in aux_markers)
+                        and (
+                            "IMP.LEY" in up
+                            or "LEY NRO" in up
+                            or "SIRCREB" in up
+                            or "TRANSFERENCIA" in up
+                            or "PAGO" in up
+                            or "CHEQUE" in up
+                            or deb != 0.0
+                            or (cred != 0.0 and saldo != 0.0)
+                        )
+                    )
+
+                    if looks_like_real_movement:
                         in_aux_block = False
                     else:
                         continue
                 else:
                     continue
-
             # -------------------------------------------------
             # 2) Lógica histórica BBVA:
             #    saldo viene en Crédito y Saldo queda en 0
