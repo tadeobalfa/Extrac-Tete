@@ -34,6 +34,11 @@ HARD_END_MARKERS = tuple(s.upper() for s in [
     "LEGALES Y AVISOS",
     "DETALLE DE IMPUESTO",
     "TOTAL SALDOS DISPONIBLES",
+    "MOVIMIENTOS PENDIENTES DE DEBITAR",
+    "TRANSFERENCIAS",
+    "RECIBIDAS (INFORMACIÓN AL",
+    "RECIBIDAS (INFORMACION AL",
+    "LEGALES Y AVISOS",
 ])
 
 # Limpieza de descripción
@@ -415,14 +420,14 @@ def parse_bbva_pdf(source: Union[str, bytes, io.BytesIO]) -> Dict[str, pd.DataFr
                         t = w["text"]
                         xc = (w["x0"] + w["x1"]) / 2.0
 
-                        if xc < cols.cut1:
+                        if xc < cols.left_border:
                             if not _is_dateish(t):
                                 desc_parts.append(t)
                         elif cols.left_border <= xc < cols.cut1:
                             deb_tokens.append(t)
                         elif cols.cut1 <= xc < cols.cut2:
                             cred_tokens.append(t)
-                        elif xc >= cols.cut2:
+                        else:
                             saldo_tokens.append(t)
 
                     j += 1
