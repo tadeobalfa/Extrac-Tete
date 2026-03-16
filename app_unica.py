@@ -1088,11 +1088,10 @@ def fix_bbva(df):
     df["Crédito"] = df["Crédito"].apply(_coerce_number)
     df["Saldo"] = df["Saldo"].apply(_coerce_number)
 
-    # Solo tocar esta cuenta. El resto queda exactamente igual.
+    # Solo tocar esta cuenta problemática.
     target_account = "CC $ 084-335800-9"
 
     if "Cuenta" not in df.columns:
-        # si por alguna razón no viene Cuenta, no tocar nada
         return df
 
     trailing_amt_re = re.compile(
@@ -1115,7 +1114,6 @@ def fix_bbva(df):
     result_chunks = []
 
     for cuenta, chunk in df.groupby("Cuenta", sort=False):
-        # cuentas distintas a la problemática: no tocar
         if str(cuenta).strip() != target_account:
             result_chunks.append(chunk)
             continue
@@ -1136,14 +1134,13 @@ def fix_bbva(df):
             saldo = float(row["Saldo"] or 0.0)
 
             # -------------------------------------------------
-            # 1) Cortar bloque auxiliar mal parseado
+            # 1) Bloques auxiliares que no son movimientos reales
             # -------------------------------------------------
             if any(m in up for m in aux_markers):
                 in_aux_block = True
                 continue
 
             if in_aux_block:
-                # volver a aceptar filas cuando reaparece una secuencia temporal lógica
                 if pd.notna(fecha) and prev_good_date is not None:
                     delta_days = abs((fecha - prev_good_date).days)
                     if delta_days <= 90:
@@ -1154,32 +1151,85 @@ def fix_bbva(df):
                     continue
 
             # -------------------------------------------------
-            # 2) Reparar filas rotas:
-            #    - importe quedó al final de la descripción
-            #    - crédito contiene el saldo real
-            #    - saldo quedó descontrolado
+            # 2) Lógica histórica BBVA:
+            #    saldo viene en Crédito y Saldo queda en 0
             # -------------------------------------------------
-            m = trailing_amt_re.match(desc)
-            if m and prev_good_saldo is not None:
-                desc_base = m.group(1).rstrip(" -—•:")
-                amt_txt = m.group(2)
-                amt_val = _coerce_number(amt_txt)
+            if saldo == 0.0 and cred > 0.0:
+                saldo_real = cred
+                deb_real = 0.0
+                cred_real = 0.0
+                desc_real = desc
 
-                deb_fix = abs(amt_val) if amt_val < 0 else 0.0
-                cred_fix = abs(amt_val) if amt_val > 0 else 0.0
-                expected_saldo = round(prev_good_saldo - deb_fix + cred_fix, 2)
+                m = trailing_amt_re.match(desc)
 
-                # señales de fila rota:
-                # - el crédito actual coincide con el saldo esperado
-                # - o el saldo actual es absurdamente grande respecto al esperado
-                credit_is_expected_saldo = abs(cred - expected_saldo) <= 0.05
-                saldo_is_absurd = abs(saldo) > max(abs(expected_saldo) * 3, 5_000_000)
+                # 2.a) Si el importe viene pegado al final de la descripción
+                if m:
+                    desc_base = m.group(1).rstrip(" -—•:")
+                    amt_txt = m.group(2)
+                    amt_val = _coerce_number(amt_txt)
 
-                if credit_is_expected_saldo or saldo_is_absurd:
-                    desc = desc_base
-                    deb = deb_fix
-                    cred = cred_fix
-                    saldo = expected_saldo
+                    desc_real = desc_base
+
+                    if amt_val < 0:
+                        deb_real = abs(amt_val)
+                        cred_real = 0.0
+                    elif amt_val > 0:
+                        cred_real = abs(amt_val)
+                        deb_real = 0.0
+
+                # 2.b) Si NO viene importe en descripción, inferir por delta de saldo
+                elif prev_good_saldo is not None:
+                    delta = saldo_real - prev_good_saldo
+
+                    if abs(delta) >= 0.004:
+                        if delta > 0:
+                            cred_real = round(delta, 2)
+                            deb_real = 0.0
+                        else:
+                            deb_real = round(abs(delta), 2)
+                            cred_real = 0.0
+
+                else:
+                    # no se puede inferir movimiento, al menos corregimos saldo
+                    prev_good_saldo = saldo_real
+                    prev_good_date = fecha if pd.notna(fecha) else prev_good_date
+
+                    fixed_row = row.copy()
+                    fixed_row["Descripción"] = desc_real
+                    fixed_row["Débito"] = 0.0
+                    fixed_row["Crédito"] = 0.0
+                    fixed_row["Saldo"] = round(saldo_real, 2)
+                    fixed_rows.append(fixed_row)
+                    continue
+
+                desc = desc_real
+                deb = round(deb_real, 2)
+                cred = round(cred_real, 2)
+                saldo = round(saldo_real, 2)
+
+            # -------------------------------------------------
+            # 3) Reparación adicional del bloque 204–220:
+            #    importe al final de descripción + saldo corrido
+            # -------------------------------------------------
+            elif prev_good_saldo is not None:
+                m = trailing_amt_re.match(desc)
+                if m:
+                    desc_base = m.group(1).rstrip(" -—•:")
+                    amt_txt = m.group(2)
+                    amt_val = _coerce_number(amt_txt)
+
+                    deb_fix = abs(amt_val) if amt_val < 0 else 0.0
+                    cred_fix = abs(amt_val) if amt_val > 0 else 0.0
+                    expected_saldo = round(prev_good_saldo - deb_fix + cred_fix, 2)
+
+                    credit_is_expected_saldo = abs(cred - expected_saldo) <= 0.05
+                    saldo_is_absurd = abs(saldo) > max(abs(expected_saldo) * 3, 5_000_000)
+
+                    if credit_is_expected_saldo or saldo_is_absurd:
+                        desc = desc_base
+                        deb = deb_fix
+                        cred = cred_fix
+                        saldo = expected_saldo
 
             fixed_row = row.copy()
             fixed_row["Descripción"] = desc
