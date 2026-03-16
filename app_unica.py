@@ -1067,8 +1067,94 @@ def fix_credicoop(df):
     return df
 
 def fix_bbva(df):
+    df = df.copy()
+
+    if df.empty:
+        return df
+
+    # asegurar columnas
+    for c in ["Descripción", "Débito", "Crédito", "Saldo"]:
+        if c not in df.columns:
+            if c == "Descripción":
+                df[c] = ""
+            else:
+                df[c] = 0.0
+
+    df["Descripción"] = df["Descripción"].astype(str).fillna("")
+    df["Débito"] = df["Débito"].apply(_coerce_number)
+    df["Crédito"] = df["Crédito"].apply(_coerce_number)
+    df["Saldo"] = df["Saldo"].apply(_coerce_number)
+
+    trailing_amt_re = re.compile(
+        r"^(.*?)([-+]?\s*\$?\s*(?:\d{1,3}(?:\.\d{3})+|\d+)(?:,\d{2})(?:-)?)\s*$"
+    )
+
+    prev_saldo = None
+
+    for i, row in df.iterrows():
+        desc = str(row["Descripción"]).strip()
+        deb = float(row["Débito"] or 0.0)
+        cred = float(row["Crédito"] or 0.0)
+        saldo = float(row["Saldo"] or 0.0)
+
+        # Caso roto BBVA:
+        # saldo viene en Crédito y Saldo queda en 0
+        if saldo == 0.0 and cred > 0.0:
+            saldo_real = cred
+            deb_real = 0.0
+            cred_real = 0.0
+            desc_real = desc
+
+            m = trailing_amt_re.match(desc)
+
+            # 1) Si el importe viene pegado al final de la descripción
+            if m:
+                desc_base = m.group(1).rstrip(" -—•:")
+                amt_txt = m.group(2)
+                amt_val = _coerce_number(amt_txt)
+
+                desc_real = desc_base
+
+                if amt_val < 0:
+                    deb_real = abs(amt_val)
+                    cred_real = 0.0
+                elif amt_val > 0:
+                    cred_real = abs(amt_val)
+                    deb_real = 0.0
+
+            # 2) Si NO viene importe en descripción, inferir por delta de saldo
+            elif prev_saldo is not None:
+                delta = saldo_real - prev_saldo
+
+                if abs(delta) >= 0.004:
+                    if delta > 0:
+                        cred_real = round(delta, 2)
+                        deb_real = 0.0
+                    else:
+                        deb_real = round(abs(delta), 2)
+                        cred_real = 0.0
+
+            else:
+                # sin saldo previo no podemos inferir bien
+                prev_saldo = saldo_real
+                df.at[i, "Saldo"] = saldo_real
+                df.at[i, "Crédito"] = 0.0
+                continue
+
+            df.at[i, "Descripción"] = desc_real
+            df.at[i, "Débito"] = round(deb_real, 2)
+            df.at[i, "Crédito"] = round(cred_real, 2)
+            df.at[i, "Saldo"] = round(saldo_real, 2)
+
+            prev_saldo = saldo_real
+            continue
+
+        # si la fila ya vino bien
+        if saldo != 0.0:
+            prev_saldo = saldo
+
     return df
-   
+    
 def fix_brubank(df):
     return df
 
@@ -1391,9 +1477,9 @@ if do_convert:
                             fin = pd.DataFrame(raw)
                         except Exception:
                             fin = pd.DataFrame(columns=EXPECTED_COLS)
-                else:
-                    mid = _normalize_df(raw)
-                    fin = _normalize_df(FIXES[detected_bank](mid))              
+                            
+                    fin = _ensure_columns_for_export(fin)
+                    fin = fix_bbva(fin)            
                     
                     if detected_bank != "SUPERVIELLE 2":
                         fin = _sort_rows_by_fecha(fin)
