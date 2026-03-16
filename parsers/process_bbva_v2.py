@@ -41,6 +41,15 @@ HARD_END_MARKERS = tuple(s.upper() for s in [
     "LEGALES Y AVISOS",
 ])
 
+# Estas secciones SOLO deben cortar cuando ya terminó una cuenta
+POST_ACCOUNT_AUX_MARKERS = tuple(s.upper() for s in [
+    "MOVIMIENTOS PENDIENTES DE DEBITAR",
+    "TRANSFERENCIAS",
+    "CHEQUES ELECTRONICOS INFORMACION AL",
+    "CHEQUES ELECTRÓNICOS INFORMACIÓN AL",
+    "LEGALES Y AVISOS",
+])
+
 # Limpieza de descripción
 NOISE_RE = re.compile(r"\(cid:\d+\)|cid:\d+", re.IGNORECASE)
 LEADING_DUP_DATE_RE = re.compile(r"^\s*\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\s+")
@@ -287,6 +296,8 @@ def parse_bbva_pdf(source: Union[str, bytes, io.BytesIO]) -> Dict[str, pd.DataFr
         default_year: Optional[int] = None
 
         for page in pdf.pages:
+            closed_account_on_page = False
+            
             words = page.extract_words(
                 use_text_flow=True,
                 keep_blank_chars=False,
@@ -347,10 +358,15 @@ def parse_bbva_pdf(source: Union[str, bytes, io.BytesIO]) -> Dict[str, pd.DataFr
                 ln = lines[i]
                 text_line = " ".join([w["text"] for w in ln]).strip()
                 up = text_line.upper()
+                # Si ya se cerró una cuenta en esta página, y ahora arranca una sección auxiliar,
+                # no hay que seguir leyendo el resto de la página como movimientos.
+                if closed_account_on_page and any(mark in up for mark in POST_ACCOUNT_AUX_MARKERS):
+                    break
 
                 if END_ACC_RE.search(up):
                     current_account = None
                     skip_until_header = True
+                    closed_account_on_page = True
                     i += 1
                     continue
 
@@ -370,6 +386,7 @@ def parse_bbva_pdf(source: Union[str, bytes, io.BytesIO]) -> Dict[str, pd.DataFr
                     )
                     prev_saldo_map.setdefault(current_account, None)
                     skip_until_header = False
+                    closed_account_on_page = False
                     i += 1
                     continue
 
