@@ -1181,29 +1181,9 @@ def fix_bbva(df):
                     continue
             # -------------------------------------------------
             # 2) Lógica histórica BBVA:
-            #    - a veces saldo viene en Crédito y Saldo queda en 0
-            #    - otras veces saldo viene en Crédito y la columna Saldo explota
+            #    saldo viene en Crédito y Saldo queda en 0
             # -------------------------------------------------
-            suspicious_credit_as_balance = False
-
-            if cred > 0.0 and prev_good_saldo is not None:
-                # Caso clásico: saldo quedó en 0
-                if saldo == 0.0:
-                    suspicious_credit_as_balance = True
-                else:
-                    # Caso remanente 504-512:
-                    # Crédito trae el saldo real y Saldo queda absurdamente grande.
-                    # Señal fuerte:
-                    #   - el "Crédito" está muy cerca del saldo previo
-                    #     (o del saldo previo +/- un movimiento razonable)
-                    #   - pero el Saldo actual está totalmente fuera de escala
-                    delta_credit_vs_prev = abs(cred - prev_good_saldo)
-                    saldo_absurd = abs(saldo - prev_good_saldo) > 1_000_000
-
-                    if delta_credit_vs_prev <= 2_000_000 and saldo_absurd:
-                        suspicious_credit_as_balance = True
-
-            if suspicious_credit_as_balance:
+            if saldo == 0.0 and cred > 0.0:
                 saldo_real = cred
                 deb_real = 0.0
                 cred_real = 0.0
