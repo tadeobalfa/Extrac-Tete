@@ -1599,24 +1599,33 @@ if do_convert:
                     timeout=timeout_sec,
                 )
                 
-                if bank == "BBVA":
-                    if isinstance(raw, pd.DataFrame):
-                        fin = raw.copy()
-                    else:
-                        try:
-                            fin = pd.DataFrame(raw)
-                        except Exception:
-                            fin = pd.DataFrame(columns=EXPECTED_COLS)
-                            
+                if isinstance(raw, pd.DataFrame):
+                    fin = raw.copy()
+                else:
+                    try:
+                        fin = pd.DataFrame(raw)
+                    except Exception:
+                        fin = pd.DataFrame(columns=EXPECTED_COLS)
+
+                fin = _normalize_df(fin)
+                fin = _ensure_columns_for_export(fin)
+
+                if detected_bank in FIXES:
+                    fin = FIXES[detected_bank](fin)
+
+                fin = _ensure_columns_for_export(fin)
+
+                if do_classification:
+                    fin = _apply_classification(fin, detected_bank)
                     fin = _ensure_columns_for_export(fin)
-                    fin = fix_bbva(fin)            
-                    
-                    if detected_bank != "SUPERVIELLE 2":
-                        fin = _sort_rows_by_fecha(fin)
+
+                # mantener comportamiento actual de orden
+                if detected_bank != "SUPERVIELLE 2":
+                    fin = _sort_rows_by_fecha(fin)
 
             _log(f"✓ {name}: {detected_bank} | {len(fin)} filas en {time.time() - t0:.1f}s")
             return fin, detected_bank
-
+            
         items = []
         errors = []
 
