@@ -1091,11 +1091,13 @@ def fix_bbva(df):
     if "Cuenta" not in df.columns:
         return df
 
+    # cuenta principal: NO tocar su lógica actual
+    target_account = "CC $ 084-335800-9"
+
     trailing_amt_re = re.compile(
         r"^(.*?)([-+]?\s*\$?\s*(?:\d{1,3}(?:\.\d{3})+|\d+)(?:,\d{2})(?:-)?)\s*$"
     )
 
-    # Bloques / textos que NO son movimientos reales
     aux_markers = (
         "FECHA DE EMISION FECHA DE PAGO NRO DE CHEQUE",
         "FECHA DE EMISIÓN FECHA DE PAGO NRO DE CHEQUE",
@@ -1124,31 +1126,222 @@ def fix_bbva(df):
         "VER LEGALES: MOVIMIENTOS CTA CTE BANCARIA",
         "MOVIMIENTOS CTA.CTE.BANCARIA",
         "MOVIMIENTOS CTA CTE BANCARIA",
-        "SIN MOVIMIENTOS",
     )
 
-    def _is_aux_row(desc: str, deb: float, cred: float) -> bool:
+    def _is_noise_desc(desc: str) -> bool:
+        up = str(desc).upper().strip()
+        if not up:
+            return True
+        return any(m in up for m in aux_markers)
+
+    def _looks_like_real_movement(fecha, desc: str, deb: float, cred: float, saldo: float) -> bool:
         up = str(desc).upper().strip()
 
-        if any(m in up for m in aux_markers):
+        if "SIN MOVIMIENTOS" in up:
+            return False
+        if _is_noise_desc(desc):
+            return False
+
+        # fila con fecha + movimiento o saldo razonable
+        if pd.notna(fecha) and (deb != 0.0 or cred != 0.0):
             return True
 
-        # headers / filas vacías sin movimiento real
-        if up in {"", "-", "—"} and deb == 0.0 and cred == 0.0:
+        # algunos movimientos pueden venir solo con saldo
+        if pd.notna(fecha) and saldo != 0.0 and (
+            "IMP.LEY" in up
+            or "LEY NRO" in up
+            or "SIRCREB" in up
+            or "TRANSFERENCIA" in up
+            or "PAGO" in up
+            or "CHEQUE" in up
+            or "COMI" in up
+            or "IVA" in up
+            or "OPER.FONDO" in up
+            or "CUENTA VISA" in up
+        ):
             return True
 
         return False
 
     result_chunks = []
 
-    # procesar cada cuenta por separado, sin hardcodear números
     for cuenta, chunk in df.groupby("Cuenta", sort=False):
-        chunk = chunk.reset_index(drop=True).copy()
-        fixed_rows = []
+        cta = str(cuenta).strip()
 
-        prev_good_saldo = None
-        prev_good_date = None
-        in_aux_block = False
+        # =====================================================
+        # 1) CUENTA PRINCIPAL -> dejar EXACTAMENTE como estaba
+        # =====================================================
+        if cta == target_account:
+            chunk = chunk.reset_index(drop=True).copy()
+            fixed_rows = []
+
+            prev_good_saldo = None
+            prev_good_date = None
+            in_aux_block = False
+
+            for _, row in chunk.iterrows():
+                fecha = row["Fecha"]
+                desc = str(row["Descripción"]).strip()
+                up = desc.upper()
+                deb = float(row["Débito"] or 0.0)
+                cred = float(row["Crédito"] or 0.0)
+                saldo = float(row["Saldo"] or 0.0)
+
+                # -------------------------------------------------
+                # 1) Bloques auxiliares que no son movimientos reales
+                # -------------------------------------------------
+                if any(m in up for m in aux_markers):
+                    in_aux_block = True
+                    continue
+
+                if in_aux_block:
+                    if pd.notna(fecha) and prev_good_date is not None:
+                        delta_days = abs((fecha - prev_good_date).days)
+
+                        looks_like_real_movement = (
+                            delta_days <= 90
+                            and not any(m in up for m in aux_markers)
+                            and (
+                                "IMP.LEY" in up
+                                or "LEY NRO" in up
+                                or "SIRCREB" in up
+                                or "TRANSFERENCIA" in up
+                                or "PAGO" in up
+                                or "CHEQUE" in up
+                                or deb != 0.0
+                                or (cred != 0.0 and saldo != 0.0)
+                            )
+                        )
+
+                        if looks_like_real_movement:
+                            in_aux_block = False
+                        else:
+                            continue
+                    else:
+                        continue
+
+                # -------------------------------------------------
+                # 2) Lógica histórica BBVA:
+                #    saldo viene en Crédito y Saldo queda en 0
+                # -------------------------------------------------
+                if saldo == 0.0 and cred > 0.0:
+                    saldo_real = cred
+                    deb_real = 0.0
+                    cred_real = 0.0
+                    desc_real = desc
+
+                    m = trailing_amt_re.match(desc)
+
+                    # 2.a) Si el importe viene pegado al final de la descripción
+                    if m:
+                        desc_base = m.group(1).rstrip(" -—•:")
+                        amt_txt = m.group(2)
+                        amt_val = _coerce_number(amt_txt)
+
+                        desc_real = desc_base
+
+                        if amt_val < 0:
+                            deb_real = abs(amt_val)
+                            cred_real = 0.0
+                        elif amt_val > 0:
+                            cred_real = abs(amt_val)
+                            deb_real = 0.0
+
+                    # 2.b) Si NO viene importe en descripción, inferir por delta de saldo
+                    elif prev_good_saldo is not None:
+                        delta = saldo_real - prev_good_saldo
+
+                        if abs(delta) >= 0.004:
+                            if delta > 0:
+                                cred_real = round(delta, 2)
+                                deb_real = 0.0
+                            else:
+                                deb_real = round(abs(delta), 2)
+                                cred_real = 0.0
+
+                    else:
+                        prev_good_saldo = saldo_real
+                        prev_good_date = fecha if pd.notna(fecha) else prev_good_date
+
+                        fixed_row = row.copy()
+                        fixed_row["Descripción"] = desc_real
+                        fixed_row["Débito"] = 0.0
+                        fixed_row["Crédito"] = 0.0
+                        fixed_row["Saldo"] = round(saldo_real, 2)
+                        fixed_rows.append(fixed_row)
+                        continue
+
+                    desc = desc_real
+                    deb = round(deb_real, 2)
+                    cred = round(cred_real, 2)
+                    saldo = round(saldo_real, 2)
+
+                # -------------------------------------------------
+                # 3) Reparación adicional del bloque 204–220:
+                #    importe al final de descripción + saldo corrido
+                # -------------------------------------------------
+                elif prev_good_saldo is not None:
+                    m = trailing_amt_re.match(desc)
+                    if m:
+                        desc_base = m.group(1).rstrip(" -—•:")
+                        amt_txt = m.group(2)
+                        amt_val = _coerce_number(amt_txt)
+
+                        deb_fix = abs(amt_val) if amt_val < 0 else 0.0
+                        cred_fix = abs(amt_val) if amt_val > 0 else 0.0
+                        expected_saldo = round(prev_good_saldo - deb_fix + cred_fix, 2)
+
+                        credit_is_expected_saldo = abs(cred - expected_saldo) <= 0.05
+                        saldo_is_absurd = abs(saldo) > max(abs(expected_saldo) * 3, 5_000_000)
+
+                        if credit_is_expected_saldo or saldo_is_absurd:
+                            desc = desc_base
+                            deb = deb_fix
+                            cred = cred_fix
+                            saldo = expected_saldo
+
+                fixed_row = row.copy()
+                fixed_row["Descripción"] = desc
+                fixed_row["Débito"] = round(deb, 2)
+                fixed_row["Crédito"] = round(cred, 2)
+                fixed_row["Saldo"] = round(saldo, 2)
+
+                fixed_rows.append(fixed_row)
+
+                if pd.notna(fecha):
+                    prev_good_date = fecha
+
+                prev_good_saldo = float(fixed_row["Saldo"])
+
+            if fixed_rows:
+                fixed_chunk = pd.DataFrame(fixed_rows)
+            else:
+                fixed_chunk = chunk.iloc[0:0].copy()
+
+            result_chunks.append(fixed_chunk)
+            continue
+
+        # =====================================================
+        # 2) RESTO DE CUENTAS -> limpieza GENÉRICA y CONSERVADORA
+        # =====================================================
+        chunk = chunk.reset_index(drop=True).copy()
+
+        # detectar si la cuenta realmente tiene movimientos
+        real_movement_mask = chunk.apply(
+            lambda r: _looks_like_real_movement(
+                r["Fecha"],
+                r["Descripción"],
+                float(r["Débito"] or 0.0),
+                float(r["Crédito"] or 0.0),
+                float(r["Saldo"] or 0.0),
+            ),
+            axis=1,
+        )
+
+        has_real_movements = bool(real_movement_mask.any())
+
+        cleaned_rows = []
+        prev_saldo = None
 
         for _, row in chunk.iterrows():
             fecha = row["Fecha"]
@@ -1158,48 +1351,24 @@ def fix_bbva(df):
             cred = float(row["Crédito"] or 0.0)
             saldo = float(row["Saldo"] or 0.0)
 
-            # -------------------------------------------------
-            # 1) Bloques auxiliares / legales / impuestos
-            # -------------------------------------------------
-            if _is_aux_row(desc, deb, cred):
-                in_aux_block = True
+            # si la cuenta NO tiene movimientos reales, dejarla vacía
+            if not has_real_movements:
                 continue
 
-            if in_aux_block:
-                # Salimos del bloque auxiliar solo si reaparece una fila con pinta
-                # real de movimiento bancario
-                if pd.notna(fecha):
-                    looks_like_real_movement = (
-                        not _is_aux_row(desc, deb, cred)
-                        and (
-                            deb != 0.0
-                            or cred != 0.0
-                            or "IMP.LEY" in up
-                            or "LEY NRO" in up
-                            or "SIRCREB" in up
-                            or "TRANSFERENCIA" in up
-                            or "PAGO" in up
-                            or "CHEQUE" in up
-                            or "COMISION" in up
-                            or "COMISIÓN" in up
-                            or "IVA" in up
-                            or "DEPOSITO" in up
-                            or "DEPÓSITO" in up
-                            or "DB/CR" in up
-                        )
-                    )
+            # eliminar únicamente ruido / legales / impuestos / headers
+            if _is_noise_desc(desc):
+                continue
+            if "SIN MOVIMIENTOS" in up:
+                continue
 
-                    if looks_like_real_movement:
-                        in_aux_block = False
-                    else:
-                        continue
-                else:
-                    continue
+            # si no tiene fecha ni movimiento, afuera
+            if pd.isna(fecha) and deb == 0.0 and cred == 0.0:
+                continue
 
-            # -------------------------------------------------
-            # 2) Lógica histórica BBVA:
-            #    saldo viene en Crédito y Saldo queda en 0
-            # -------------------------------------------------
+            fixed_row = row.copy()
+
+            # lógica BBVA mínima también para otras cuentas:
+            # si saldo quedó en 0 y crédito en realidad era saldo
             if saldo == 0.0 and cred > 0.0:
                 saldo_real = cred
                 deb_real = 0.0
@@ -1208,7 +1377,6 @@ def fix_bbva(df):
 
                 m = trailing_amt_re.match(desc)
 
-                # 2.a) Si el importe viene pegado al final de la descripción
                 if m:
                     desc_base = m.group(1).rstrip(" -—•:")
                     amt_txt = m.group(2)
@@ -1223,10 +1391,8 @@ def fix_bbva(df):
                         cred_real = abs(amt_val)
                         deb_real = 0.0
 
-                # 2.b) Si NO viene importe en descripción, inferir por delta de saldo
-                elif prev_good_saldo is not None:
-                    delta = saldo_real - prev_good_saldo
-
+                elif prev_saldo is not None:
+                    delta = saldo_real - prev_saldo
                     if abs(delta) >= 0.004:
                         if delta > 0:
                             cred_real = round(delta, 2)
@@ -1234,69 +1400,38 @@ def fix_bbva(df):
                         else:
                             deb_real = round(abs(delta), 2)
                             cred_real = 0.0
-                else:
-                    # sin saldo previo, al menos corregimos el saldo
-                    prev_good_saldo = saldo_real
-                    prev_good_date = fecha if pd.notna(fecha) else prev_good_date
 
-                    fixed_row = row.copy()
-                    fixed_row["Descripción"] = desc_real
-                    fixed_row["Débito"] = 0.0
-                    fixed_row["Crédito"] = 0.0
-                    fixed_row["Saldo"] = round(saldo_real, 2)
-                    fixed_rows.append(fixed_row)
-                    continue
+                fixed_row["Descripción"] = desc_real
+                fixed_row["Débito"] = round(deb_real, 2)
+                fixed_row["Crédito"] = round(cred_real, 2)
+                fixed_row["Saldo"] = round(saldo_real, 2)
+            else:
+                # solo recalcular saldo si claramente vino roto
+                if prev_saldo is not None:
+                    m = trailing_amt_re.match(desc)
+                    if m:
+                        desc_base = m.group(1).rstrip(" -—•:")
+                        amt_txt = m.group(2)
+                        amt_val = _coerce_number(amt_txt)
 
-                desc = desc_real
-                deb = round(deb_real, 2)
-                cred = round(cred_real, 2)
-                saldo = round(saldo_real, 2)
+                        deb_fix = abs(amt_val) if amt_val < 0 else 0.0
+                        cred_fix = abs(amt_val) if amt_val > 0 else 0.0
+                        expected_saldo = round(prev_saldo - deb_fix + cred_fix, 2)
 
-            # -------------------------------------------------
-            # 3) Reparación adicional:
-            #    importe al final de descripción + saldo corrido
-            # -------------------------------------------------
-            elif prev_good_saldo is not None:
-                m = trailing_amt_re.match(desc)
-                if m:
-                    desc_base = m.group(1).rstrip(" -—•:")
-                    amt_txt = m.group(2)
-                    amt_val = _coerce_number(amt_txt)
+                        credit_is_expected_saldo = abs(cred - expected_saldo) <= 0.05
+                        saldo_is_absurd = abs(saldo) > max(abs(expected_saldo) * 3, 100_000)
 
-                    deb_fix = abs(amt_val) if amt_val < 0 else 0.0
-                    cred_fix = abs(amt_val) if amt_val > 0 else 0.0
-                    expected_saldo = round(prev_good_saldo - deb_fix + cred_fix, 2)
+                        if credit_is_expected_saldo or saldo_is_absurd:
+                            fixed_row["Descripción"] = desc_base
+                            fixed_row["Débito"] = round(deb_fix, 2)
+                            fixed_row["Crédito"] = round(cred_fix, 2)
+                            fixed_row["Saldo"] = round(expected_saldo, 2)
 
-                    credit_is_expected_saldo = abs(cred - expected_saldo) <= 0.05
-                    saldo_is_absurd = abs(saldo) > max(abs(expected_saldo) * 3, 5_000_000)
+            cleaned_rows.append(fixed_row)
+            prev_saldo = float(cleaned_rows[-1]["Saldo"])
 
-                    if credit_is_expected_saldo or saldo_is_absurd:
-                        desc = desc_base
-                        deb = deb_fix
-                        cred = cred_fix
-                        saldo = expected_saldo
-
-            # -------------------------------------------------
-            # 4) Limpiar filas totalmente vacías o irreales
-            # -------------------------------------------------
-            if pd.isna(fecha) and deb == 0.0 and cred == 0.0 and saldo == 0.0:
-                continue
-
-            fixed_row = row.copy()
-            fixed_row["Descripción"] = desc
-            fixed_row["Débito"] = round(deb, 2)
-            fixed_row["Crédito"] = round(cred, 2)
-            fixed_row["Saldo"] = round(saldo, 2)
-
-            fixed_rows.append(fixed_row)
-
-            if pd.notna(fecha):
-                prev_good_date = fecha
-
-            prev_good_saldo = float(fixed_row["Saldo"])
-
-        if fixed_rows:
-            fixed_chunk = pd.DataFrame(fixed_rows)
+        if cleaned_rows:
+            fixed_chunk = pd.DataFrame(cleaned_rows)
         else:
             fixed_chunk = chunk.iloc[0:0].copy()
 
