@@ -22,6 +22,7 @@ from parsers.icbc import parse_pdf as parse_icbc
 from parsers.macro import parse_pdf as parse_macro
 from parsers.macro2 import parse_pdf as parse_macro2
 from parsers.nacion import parse_pdf as parse_nacion
+from parsers.nacion2 import parse_pdf as parse_nacion2
 from parsers.patagonia import parse_pdf as parse_patagonia
 from parsers.santanderrio import parse_pdf as parse_santanderrio
 from parsers.supervielle import parse_pdf as parse_supervielle
@@ -423,6 +424,7 @@ BANK_FORMAT_IMAGES = {
     "SUPERVIELLE 2": "supervielle2.png",
     "BANCOR": "bancor.png",
     "NACION": "nacion.png",
+    "NACION 2": "nacion2.png",
     "MERCADO PAGO": "mercadopago.png",
     "MACRO": "macro.png",
     "MACRO 2": "macro2.png",
@@ -485,6 +487,7 @@ BANK_RULE_SHEETS = {
     "MACRO": "MACRO",
     "MACRO 2": "MACRO 2",
     "NACION": "NACION",
+    "NACION 2": "NACION",
     "SANTANDER RIO": "SANTANDER RIO",
     "SUPERVIELLE": "SUPERVIELLE",
     "SUPERVIELLE 2": "SUPERVIELLE 2",
@@ -502,6 +505,7 @@ BANK_SHEET_ALIASES = {
     "MACRO": ["MACRO", "BANCO MACRO"],
     "MACRO 2": ["MACRO 2", "MACRO2", "BANCO MACRO 2"],
     "NACION": ["NACION", "BANCO NACION", "BANCO DE LA NACION ARGENTINA"],
+    "NACION 2": ["NACION 2", "NACION2", "BANCO NACION 2", "BANCO DE LA NACION ARGENTINA 2"],
     "SANTANDER RIO": ["SANTANDER RIO", "SANTANDER", "SANTANDER RIO "],
     "SUPERVIELLE": ["SUPERVIELLE", "BANCO SUPERVIELLE"],
     "SUPERVIELLE 2": ["SUPERVIELLE 2", "SUPERVIELLE2", "BANCO SUPERVIELLE 2"],
@@ -515,6 +519,7 @@ BANK_CLASSIFICATION_FALLBACKS = {
     "MACRO 2": ["MACRO 2", "MACRO"],
     "SUPERVIELLE 2": ["SUPERVIELLE 2", "SUPERVIELLE"],
     "BRUBANK": ["BRUBANK"],
+    "NACION 2": ["NACION 2", "NACION"],
 }
 
 def _norm_text(s: str) -> str:
@@ -1045,6 +1050,9 @@ def fix_galicia(df):
 def fix_nacion(df):
     return df[~df["Descripción"].str.upper().str.startswith("SALDO FINAL")].reset_index(drop=True)
 
+def fix_nacion2(df):
+    return df
+
 def fix_santanderrio(df):
     return df[~df["Descripción"].str.upper().str.startswith("SALDO TOTAL")].reset_index(drop=True)
 
@@ -1453,6 +1461,7 @@ PARSERS: Dict[str, Callable[[bytes], pd.DataFrame]] = {
     "MACRO": parse_macro,
     "MACRO 2": parse_macro2,
     "NACION": parse_nacion,
+    "NACION 2": parse_nacion2,
     "SANTANDER RIO": parse_santanderrio,
     "SUPERVIELLE": parse_supervielle,
     "SUPERVIELLE 2": parse_supervielle2,
@@ -1470,6 +1479,7 @@ FIXES: Dict[str, Callable[[pd.DataFrame], pd.DataFrame]] = {
     "MACRO": fix_macro,
     "MACRO 2": fix_macro2,
     "NACION": fix_nacion,
+    "NACION 2": fix_nacion2,
     "SANTANDER RIO": fix_santanderrio,
     "SUPERVIELLE": fix_supervielle,
     "SUPERVIELLE 2": fix_supervielle2,
@@ -1710,6 +1720,7 @@ if do_convert:
                 "MACRO": 600,
                 "MACRO 2": 600,
                 "NACION": 480,
+                "NACION 2": 480,
                 "SANTANDER RIO": 420,
                 "SUPERVIELLE": 600,
                 "SUPERVIELLE 2": 600,
@@ -1728,6 +1739,7 @@ if do_convert:
                 "MACRO": 300,
                 "MACRO 2": 300,
                 "NACION": 240,
+                "NACION 2": 240,
                 "SANTANDER RIO": 240,
                 "SUPERVIELLE": 300,
                 "SUPERVIELLE 2": 300,
