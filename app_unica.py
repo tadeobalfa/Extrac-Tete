@@ -2014,6 +2014,8 @@ if do_convert:
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         use_container_width=True,
                     )
+                    st.subheader(f"Vista previa (hoja: {first_sheet})")
+                    st.subheader(f"Vista previa (hoja: {first_sheet})")
 
                 total_rows = sum(len(_append_blocks(account_map[cta])) for cta in account_map.keys())
 
@@ -2072,6 +2074,8 @@ if do_convert:
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         use_container_width=True,
                     )
+                    st.subheader("Vista previa")
+                    st.dataframe(result_preview, use_container_width=True, height=480)
 
                 _add_history_entry(
                     bank_selected=bank,
