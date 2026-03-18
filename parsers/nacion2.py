@@ -3,8 +3,7 @@ from __future__ import annotations
 
 import io
 import re
-from dataclasses import dataclass
-from typing import List, Optional, Dict
+from typing import List, Dict, Optional
 
 import pandas as pd
 import pdfplumber
@@ -14,6 +13,14 @@ DATE_DDMM_RE = re.compile(r"^\d{2}/\d{2}$")
 YEAR_RE = re.compile(r"^/?(20\d{2})$")
 COMPROBANTE_RE = re.compile(r"^\d{4,}$")
 AMOUNT_RE = re.compile(r"^-?(?:\d{1,3}(?:\.\d{3})+|\d+)(?:,\d{2})-?$")
+
+
+# Cortes visuales fijos del layout Nación 2
+X_DATE_END = 82.16
+X_COMP_END = 178.16
+X_CONCEPT_END = 414.86
+X_IMPORTE_END = 501.41
+X_SALDO_END = 594.00
 
 
 def _clean(s: str) -> str:
@@ -35,88 +42,206 @@ def _to_amount(s: str) -> float:
         v = float(s)
     except Exception:
         return 0.0
-
     return -v if neg else v
 
 
-@dataclass
-class MovimientoParcial:
-    ddmm: str
-    year: Optional[str]
-    comprobante: str
-    descripcion: List[str]
-    importe: Optional[float]
-    saldo_pdf: Optional[float]
-
-
-def _group_rows(words: List[dict], y_tol: float = 3.5) -> List[List[dict]]:
-    rows: List[List[dict]] = []
-
-    for w in sorted(words, key=lambda z: (float(z["top"]), float(z["x0"]))):
-        y = float(w["top"])
-        placed = False
-
-        for row in rows:
-            row_y = sum(float(a["top"]) for a in row) / len(row)
-            if abs(row_y - y) <= y_tol:
-                row.append(w)
-                placed = True
-                break
-
-        if not placed:
-            rows.append([w])
-
-    for row in rows:
-        row.sort(key=lambda z: float(z["x0"]))
-
-    return rows
-
-
-def _row_tokens(row: List[dict]):
+def _group_words_by_band(words: List[dict], top_y: float, bottom_y: float) -> List[dict]:
     out = []
-    for w in row:
-        out.append({
-            "text": _clean(w["text"]),
-            "x0": float(w["x0"]),
-            "x1": float(w["x1"]),
-            "top": float(w["top"]),
-        })
+    for w in words:
+        wt = float(w["top"])
+        if top_y <= wt < bottom_y:
+            out.append(
+                {
+                    "text": _clean(w["text"]),
+                    "x0": float(w["x0"]),
+                    "x1": float(w["x1"]),
+                    "top": wt,
+                }
+            )
+    out.sort(key=lambda z: (z["top"], z["x0"]))
     return out
 
 
-def _find_header_cutoffs(rows: List[List[dict]]):
+def _find_separator_tops(page) -> List[float]:
     """
-    Busca la fila de encabezado y toma cortes de columnas.
+    Toma las líneas grises horizontales finitas (rectángulos muy bajos) como separadores reales de movimientos.
     """
-    for row in rows:
-        toks = _row_tokens(row)
-        txt = " ".join(t["text"].upper() for t in toks)
+    tops = []
 
-        if "FECHA" in txt and "COMPROBANTE" in txt and "IMPORTE" in txt and "SALDO" in txt:
-            x_comp = None
-            x_imp = None
-            x_sal = None
+    for r in page.rects:
+        height = float(r.get("height", 0) or 0)
+        width = float(r.get("width", 0) or 0)
+        top = float(r.get("top", 0) or 0)
+        x0 = float(r.get("x0", 0) or 0)
+        x1 = float(r.get("x1", 0) or 0)
 
-            for t in toks:
-                up = t["text"].upper()
-                if up.startswith("COMPROBANTE"):
-                    x_comp = t["x0"]
-                elif up.startswith("IMPORTE"):
-                    x_imp = t["x0"]
-                elif up.startswith("SALDO"):
-                    x_sal = t["x0"]
+        # separadores horizontales finitos de la tabla
+        if height <= 1.2 and width > 40 and 15 <= x0 <= 20 and 500 <= x1 <= 595:
+            tops.append(round(top, 2))
 
-            if x_comp is not None and x_imp is not None and x_sal is not None:
-                return x_comp, x_imp, x_sal
-
-    return None
+    # únicos ordenados
+    tops = sorted(set(tops))
+    return tops
 
 
-def _classify_token(text: str) -> bool:
-    return bool(AMOUNT_RE.match(text))
+def _find_header_bottom(page) -> float:
+    """
+    Busca el encabezado 'Fecha Comprobante Concepto Importe Saldo'
+    y devuelve una cota desde la cual empiezan los movimientos.
+    """
+    words = page.extract_words(
+        keep_blank_chars=False,
+        use_text_flow=False,
+        x_tolerance=1,
+        y_tolerance=1,
+    ) or []
+
+    header_tops = []
+    for w in words:
+        txt = _clean(w["text"]).upper()
+        if txt in {"FECHA", "COMPROBANTE", "CONCEPTO", "IMPORTE", "SALDO"}:
+            header_tops.append(float(w["top"]))
+
+    if header_tops:
+        return max(header_tops) + 20
+
+    return 140.0
 
 
-def _parse_page(page) -> List[MovimientoParcial]:
+def _extract_band_record(words_band: List[dict]) -> Optional[Dict]:
+    """
+    Procesa un bloque visual completo entre dos líneas grises.
+    Dentro del bloque puede haber:
+      - fecha en una línea y /2025 abajo
+      - comprobante en otra línea
+      - concepto multilínea
+      - '$' solo en una línea y número abajo
+    """
+    if not words_band:
+        return None
+
+    date_tokens = []
+    comp_tokens = []
+    concept_tokens = []
+    importe_tokens = []
+    saldo_tokens = []
+
+    for w in words_band:
+        txt = w["text"]
+        x0 = w["x0"]
+
+        if x0 < X_DATE_END:
+            date_tokens.append(txt)
+        elif x0 < X_COMP_END:
+            comp_tokens.append(txt)
+        elif x0 < X_CONCEPT_END:
+            concept_tokens.append(txt)
+        elif x0 < X_IMPORTE_END:
+            if txt != "$":
+                importe_tokens.append(txt)
+        else:
+            if txt != "$":
+                saldo_tokens.append(txt)
+
+    # fecha
+    ddmm = None
+    year = None
+
+    for t in date_tokens:
+        if DATE_DDMM_RE.match(t):
+            ddmm = t
+            break
+
+    for t in date_tokens:
+        m = YEAR_RE.match(t)
+        if m:
+            year = m.group(1)
+            break
+
+    # comprobante
+    comprobante = ""
+    for t in comp_tokens:
+        if COMPROBANTE_RE.match(t):
+            comprobante = t
+            break
+
+    # descripción
+    descripcion_parts = []
+    for t in concept_tokens:
+        if t and t != "$":
+            descripcion_parts.append(t)
+    descripcion = _clean(" ".join(descripcion_parts))
+
+    # importes
+    importe_num = None
+    saldo_num = None
+
+    imp_nums = [t for t in importe_tokens if AMOUNT_RE.match(t)]
+    sal_nums = [t for t in saldo_tokens if AMOUNT_RE.match(t)]
+
+    if imp_nums:
+        importe_num = _to_amount(imp_nums[-1])
+    if sal_nums:
+        saldo_num = _to_amount(sal_nums[-1])
+
+    # fallback extremo: si por alguna razón el importe quedó dentro del bloque pero fuera de columna
+    all_nums = [w["text"] for w in words_band if AMOUNT_RE.match(w["text"])]
+    if importe_num is None and saldo_num is None and len(all_nums) >= 2:
+        importe_num = _to_amount(all_nums[-2])
+        saldo_num = _to_amount(all_nums[-1])
+
+    if ddmm is None:
+        return {
+            "Fecha_DDMM": None,
+            "Year": year,
+            "Comprobante": comprobante,
+            "Descripción": descripcion,
+            "Débito": None,
+            "Crédito": None,
+            "Saldo_PDF": saldo_num,
+            "Importe": importe_num,
+        }
+
+    if not descripcion:
+        return {
+            "Fecha_DDMM": ddmm,
+            "Year": year,
+            "Comprobante": comprobante,
+            "Descripción": "",
+            "Débito": None,
+            "Crédito": None,
+            "Saldo_PDF": saldo_num,
+            "Importe": importe_num,
+        }
+
+    if importe_num is None or saldo_num is None:
+        return {
+            "Fecha_DDMM": ddmm,
+            "Year": year,
+            "Comprobante": comprobante,
+            "Descripción": descripcion,
+            "Débito": None,
+            "Crédito": None,
+            "Saldo_PDF": saldo_num,
+            "Importe": importe_num,
+        }
+
+    debito = abs(importe_num) if importe_num < 0 else 0.0
+    credito = abs(importe_num) if importe_num > 0 else 0.0
+
+    return {
+        "Fecha_DDMM": ddmm,
+        "Year": year,
+        "Comprobante": comprobante,
+        "Descripción": descripcion,
+        "Débito": round(debito, 2),
+        "Crédito": round(credito, 2),
+        "Saldo_PDF": round(saldo_num, 2),
+        "Importe": round(importe_num, 2),
+    }
+
+
+def _extract_page_records(page) -> List[Dict]:
     words = page.extract_words(
         keep_blank_chars=False,
         use_text_flow=False,
@@ -127,225 +252,98 @@ def _parse_page(page) -> List[MovimientoParcial]:
     if not words:
         return []
 
-    rows = _group_rows(words)
-    cutoffs = _find_header_cutoffs(rows)
-    if not cutoffs:
+    sep_tops = _find_separator_tops(page)
+    header_bottom = _find_header_bottom(page)
+
+    # nos quedamos con separadores por debajo del header
+    sep_tops = [y for y in sep_tops if y > header_bottom]
+
+    if not sep_tops:
         return []
 
-    x_comp, x_imp, x_sal = cutoffs
+    records = []
 
-    movimientos: List[MovimientoParcial] = []
-    cur: Optional[MovimientoParcial] = None
+    prev_top = header_bottom
+    for sep_top in sep_tops:
+        band_words = _group_words_by_band(words, prev_top, sep_top)
+        rec = _extract_band_record(band_words)
+        if rec is not None:
+            records.append(rec)
+        prev_top = sep_top
 
-    for row in rows:
-        toks = _row_tokens(row)
-        if not toks:
-            continue
-
-        row_text = " ".join(t["text"] for t in toks).upper()
-
-        # saltar encabezados y ruido obvio
-        if (
-            "FECHA" in row_text and "COMPROBANTE" in row_text and "IMPORTE" in row_text and "SALDO" in row_text
-        ) or "ULTIMOS MOVIMIENTOS" in row_text or "ÚLTIMOS MOVIMIENTOS" in row_text:
-            continue
-
-        # dividir por columnas
-        left = [t for t in toks if t["x0"] < x_comp]
-        mid = [t for t in toks if x_comp <= t["x0"] < x_imp]
-        imp = [t for t in toks if x_imp <= t["x0"] < x_sal]
-        sal = [t for t in toks if t["x0"] >= x_sal]
-
-        left_txts = [t["text"] for t in left if t["text"]]
-        mid_txts = [t["text"] for t in mid if t["text"]]
-        imp_txts = [t["text"] for t in imp if t["text"] not in {"$"}]
-        sal_txts = [t["text"] for t in sal if t["text"] not in {"$"}]
-
-        # ¿arranca movimiento nuevo?
-        ddmm = None
-        year = None
-
-        for tx in left_txts:
-            if DATE_DDMM_RE.match(tx):
-                ddmm = tx
-                break
-
-        for tx in left_txts:
-            m_year = YEAR_RE.match(tx)
-            if m_year:
-                year = m_year.group(1)
-                break
-
-        if ddmm is not None:
-            if cur is not None:
-                movimientos.append(cur)
-
-            comprobante = ""
-            descripcion = []
-
-            if mid_txts:
-                if COMPROBANTE_RE.match(mid_txts[0]):
-                    comprobante = mid_txts[0]
-                    descripcion = mid_txts[1:]
-                else:
-                    descripcion = mid_txts[:]
-
-            importe_val = None
-            saldo_val = None
-
-            imp_nums = [x for x in imp_txts if _classify_token(x)]
-            sal_nums = [x for x in sal_txts if _classify_token(x)]
-
-            if imp_nums:
-                importe_val = _to_amount(imp_nums[-1])
-            if sal_nums:
-                saldo_val = _to_amount(sal_nums[-1])
-
-            cur = MovimientoParcial(
-                ddmm=ddmm,
-                year=year,
-                comprobante=comprobante,
-                descripcion=descripcion,
-                importe=importe_val,
-                saldo_pdf=saldo_val,
-            )
-            continue
-
-        # continuación del movimiento actual
-        if cur is None:
-            continue
-
-        # completar año si viene en línea aparte
-        if cur.year is None:
-            for tx in left_txts:
-                m_year = YEAR_RE.match(tx)
-                if m_year:
-                    cur.year = m_year.group(1)
-                    break
-
-        # completar comprobante si vino abajo
-        if not cur.comprobante and mid_txts:
-            if COMPROBANTE_RE.match(mid_txts[0]):
-                cur.comprobante = mid_txts[0]
-                extra_desc = mid_txts[1:]
-            else:
-                extra_desc = mid_txts
-        else:
-            extra_desc = mid_txts
-
-        if extra_desc:
-            cur.descripcion.extend(extra_desc)
-
-        # importe
-        imp_nums = [x for x in imp_txts if _classify_token(x)]
-        if imp_nums:
-            cur.importe = _to_amount(imp_nums[-1])
-
-        # saldo
-        sal_nums = [x for x in sal_txts if _classify_token(x)]
-        if sal_nums:
-            cur.saldo_pdf = _to_amount(sal_nums[-1])
-
-        # caso especial: cuando el importe cae debajo del año y sigue estando
-        # en la columna IMPORTE aunque visualmente parezca otra línea
-        # o cuando saldo queda todavía en la columna IMPORTE por desfasaje mínimo
-        if cur.importe is None and cur.saldo_pdf is None:
-            all_nums = [t["text"] for t in toks if _classify_token(t["text"])]
-            if len(all_nums) >= 2:
-                cur.importe = _to_amount(all_nums[-2])
-                cur.saldo_pdf = _to_amount(all_nums[-1])
-            elif len(all_nums) == 1:
-                # si ya tengo importe, esto probablemente sea saldo; si no, importe
-                v = _to_amount(all_nums[0])
-                if cur.importe is None:
-                    cur.importe = v
-                else:
-                    cur.saldo_pdf = v
-
-    if cur is not None:
-        movimientos.append(cur)
-
-    return movimientos
+    return records
 
 
-def _merge_cross_page(movs: List[MovimientoParcial]) -> List[MovimientoParcial]:
+def _merge_cross_page(records: List[Dict]) -> List[Dict]:
     """
-    Une movimientos cortados entre páginas:
-    - puede venir fecha sola al final de página
-    - y el resto al inicio de la siguiente
+    Une casos donde al final de página queda solo la fecha dd/mm
+    y en la página siguiente viene /2025 + resto del movimiento.
     """
-    merged: List[MovimientoParcial] = []
+    merged = []
 
-    for m in movs:
-        if (
-            merged
-            and merged[-1].year is None
-            and not merged[-1].descripcion
-            and merged[-1].importe is None
-            and merged[-1].saldo_pdf is None
-        ):
-            prev = merged.pop()
+    i = 0
+    while i < len(records):
+        cur = records[i]
 
-            ddmm = prev.ddmm
-            year = m.year
-            comprobante = m.comprobante
-            descripcion = m.descripcion[:]
-            importe = m.importe
-            saldo_pdf = m.saldo_pdf
+        incomplete_date_only = (
+            cur.get("Fecha_DDMM")
+            and not cur.get("Year")
+            and not cur.get("Descripción")
+            and cur.get("Importe") is None
+            and cur.get("Saldo_PDF") is None
+        )
 
-            merged.append(
-                MovimientoParcial(
-                    ddmm=ddmm,
-                    year=year,
-                    comprobante=comprobante,
-                    descripcion=descripcion,
-                    importe=importe,
-                    saldo_pdf=saldo_pdf,
-                )
-            )
-        else:
-            merged.append(m)
+        if incomplete_date_only and i + 1 < len(records):
+            nxt = records[i + 1]
+            new_rec = dict(nxt)
+            new_rec["Fecha_DDMM"] = cur["Fecha_DDMM"]
+            merged.append(new_rec)
+            i += 2
+            continue
+
+        merged.append(cur)
+        i += 1
 
     return merged
 
 
 def parse_pdf(raw_bytes: bytes) -> pd.DataFrame:
-    movimientos: List[MovimientoParcial] = []
+    all_records: List[Dict] = []
 
     with pdfplumber.open(io.BytesIO(raw_bytes)) as pdf:
         for page in pdf.pages:
-            movimientos.extend(_parse_page(page))
+            all_records.extend(_extract_page_records(page))
 
-    movimientos = _merge_cross_page(movimientos)
+    all_records = _merge_cross_page(all_records)
 
-    rows: List[Dict] = []
-    for m in movimientos:
-        if not m.ddmm or not m.year:
+    rows = []
+    for r in all_records:
+        ddmm = r.get("Fecha_DDMM")
+        year = r.get("Year")
+        desc = _clean(r.get("Descripción", ""))
+        importe = r.get("Importe")
+        saldo_pdf = r.get("Saldo_PDF")
+
+        # todo movimiento válido debe tener sí o sí fecha, descripción, importe y saldo
+        if not ddmm or not year or not desc:
             continue
-        if m.importe is None or m.saldo_pdf is None:
+        if importe is None or saldo_pdf is None:
             continue
 
-        fecha = pd.to_datetime(f"{m.ddmm}/{m.year}", format="%d/%m/%Y", errors="coerce")
+        fecha = pd.to_datetime(f"{ddmm}/{year}", format="%d/%m/%Y", errors="coerce")
         if pd.isna(fecha):
             continue
 
-        descripcion = _clean(" ".join(m.descripcion))
-        if not descripcion:
-            continue
-
-        importe = float(m.importe)
-        saldo_pdf = float(m.saldo_pdf)
-
-        debito = abs(importe) if importe < 0 else 0.0
-        credito = abs(importe) if importe > 0 else 0.0
+        debito = abs(float(importe)) if float(importe) < 0 else 0.0
+        credito = abs(float(importe)) if float(importe) > 0 else 0.0
 
         rows.append(
             {
                 "Fecha": fecha,
-                "Descripción": descripcion,
+                "Descripción": desc,
                 "Débito": round(debito, 2),
                 "Crédito": round(credito, 2),
-                "Saldo_PDF": round(saldo_pdf, 2),
+                "Saldo_PDF": round(float(saldo_pdf), 2),
             }
         )
 
@@ -354,15 +352,15 @@ def parse_pdf(raw_bytes: bytes) -> pd.DataFrame:
 
     df = pd.DataFrame(rows)
 
-    # PDF: más nuevo -> más viejo
-    # salida: cronológico
+    # PDF viene del más nuevo al más viejo
     df = df.iloc[::-1].reset_index(drop=True)
 
-    # Nación 2: el saldo del PDF es el saldo ANTERIOR al movimiento
-    # El saldo real posterior es el de la fila superior del PDF
-    # => en cronológico: shift(-1)
+    # Nación 2:
+    # el saldo del PDF es el saldo ANTERIOR al movimiento
+    # el saldo real posterior es el saldo de la fila superior del PDF
     df["Saldo"] = df["Saldo_PDF"].shift(-1)
 
+    # último movimiento cronológico
     last_idx = len(df) - 1
     df.loc[last_idx, "Saldo"] = (
         float(df.loc[last_idx, "Saldo_PDF"])
