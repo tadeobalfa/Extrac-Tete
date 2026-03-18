@@ -3,30 +3,30 @@ from __future__ import annotations
 
 import io
 import re
-from typing import List, Dict, Optional
+from dataclasses import dataclass
+from typing import List, Optional, Tuple
 
 import pandas as pd
 import pdfplumber
 
 
-DATE_FULL_RE = re.compile(r"\b(\d{2}/\d{2}/\d{2,4})\b")
-DATE_DDMM_RE = re.compile(r"^\s*(\d{2}/\d{2})\s*$")
-YEAR_LINE_RE = re.compile(r"^\s*/?(20\d{2})\b")
-
-AMOUNT_RE = re.compile(
-    r"\$?\s*-?\s*(?:\d{1,3}(?:[.\s]\d{3})+|\d+)(?:,\d{2})-?"
-)
-
-COMPROBANTE_RE = re.compile(r"^\d{4,}$")
+DATE_FULL_RE = re.compile(r"^\d{2}/\d{2}/\d{4}$")
+DATE_DDMM_RE = re.compile(r"^\d{2}/\d{2}$")
+YEAR_RE = re.compile(r"^/?(20\d{2})$")
+AMT_RE = re.compile(r"^-?\$?\s*(?:\d{1,3}(?:\.\d{3})+|\d+)(?:,\d{2})-?$")
 
 
-def _coerce_amount(s: str) -> float:
-    if s is None:
-        return 0.0
-    s = str(s).strip()
-    s = s.replace("\u2212", "-").replace("−", "-")
-    s = s.replace("$", "").replace(" ", "")
+def _norm(s: str) -> str:
+    return re.sub(r"\s+", " ", (s or "").replace("\xa0", " ")).strip()
 
+
+def _is_amount(s: str) -> bool:
+    s = _norm(s).replace(" ", "")
+    return bool(AMT_RE.match(s))
+
+
+def _to_amount(s: str) -> float:
+    s = _norm(s).replace("$", "").replace(" ", "").replace("\u2212", "-").replace("−", "-")
     if not s:
         return 0.0
 
@@ -40,242 +40,348 @@ def _coerce_amount(s: str) -> float:
         v = float(s)
     except Exception:
         return 0.0
-
     return -v if neg else v
 
 
-def _clean_text(s: str) -> str:
-    s = (s or "").replace("\xa0", " ")
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
+def _to_date(s: str) -> pd.Timestamp:
+    return pd.to_datetime(_norm(s), format="%d/%m/%Y", errors="coerce")
 
 
-def _is_header_or_noise(line: str) -> bool:
-    up = _clean_text(line).upper()
+def _is_probable_header(text: str) -> bool:
+    up = _norm(text).upper()
+    return (
+        "FECHA" in up
+        and "COMPROBANTE" in up
+        and "IMPORTE" in up
+        and "SALDO" in up
+    )
 
+
+def _is_noise_text(text: str) -> bool:
+    up = _norm(text).upper()
     if not up:
         return True
 
-    noise_contains = [
+    bad_contains = [
         "BANCO DE LA NACION ARGENTINA",
-        "BANCO NACION",
-        "EXTRACTO",
-        "PAGINA",
         "PÁGINA",
-        "MOVIMIENTOS",
-        "FECHA",
-        "COMPROBANTE",
-        "IMPORTE",
-        "SALDO",
-        "TOTAL",
+        "PAGINA",
+        "EXTRACTO",
         "RESUMEN",
-        "CUENTA CORRIENTE",
         "CUENTA",
         "CBU",
-        "CBU:",
-        "NRO.",
-        "NÚMERO DE CUENTA",
-        "NUMERO DE CUENTA",
-        "MONEDA",
+        "CUIT",
         "SUCURSAL",
-        "HOJA",
+        "DOMICILIO",
+        "MONEDA",
+        "FECHA COMPROBANTE",
+        "FECHA   COMPROBANTE",
+        "FECHA COMPROBANTE DESCRIPCION",
+        "DESCRIPCION IMPORTE SALDO",
+        "DESCRIPCIÓN IMPORTE SALDO",
     ]
-
-    if up in {"$", "/2025", "/2024", "/2023"}:
-        return False
-
-    return any(x in up for x in noise_contains)
+    return any(x in up for x in bad_contains)
 
 
-def _extract_lines_from_pdf(raw_bytes: bytes) -> List[str]:
-    lines: List[str] = []
-
-    with pdfplumber.open(io.BytesIO(raw_bytes)) as pdf:
-        for page in pdf.pages:
-            txt = page.extract_text(x_tolerance=2, y_tolerance=2) or ""
-            page_lines = txt.splitlines()
-
-            for line in page_lines:
-                line = line.rstrip()
-                if line is None:
-                    continue
-                lines.append(line)
-
-    return lines
+@dataclass
+class WordRow:
+    y: float
+    words: List[dict]
 
 
-def _merge_split_dates(lines: List[str]) -> List[str]:
+@dataclass
+class ParsedRow:
+    fecha: pd.Timestamp
+    descripcion: str
+    debito: float
+    credito: float
+    saldo_pdf: float
+
+
+def _group_words_to_rows(words: List[dict], y_tol: float = 3.0) -> List[WordRow]:
+    words = sorted(words, key=lambda w: (round(float(w["top"]), 1), float(w["x0"])))
+    rows: List[WordRow] = []
+
+    for w in words:
+        y = float(w["top"])
+        placed = False
+
+        for row in rows:
+            if abs(row.y - y) <= y_tol:
+                row.words.append(w)
+                placed = True
+                break
+
+        if not placed:
+            rows.append(WordRow(y=y, words=[w]))
+
+    for row in rows:
+        row.words.sort(key=lambda w: float(w["x0"]))
+
+    rows.sort(key=lambda r: r.y)
+    return rows
+
+
+def _row_text(row: WordRow) -> str:
+    return _norm(" ".join(_norm(w["text"]) for w in row.words))
+
+
+def _find_header_positions(rows: List[WordRow]) -> Optional[Tuple[float, float, float]]:
     """
-    Une casos tipo:
-      03/07
-      /2025 28912520 GRAVAMEN ...
-    => 03/07/2025 28912520 GRAVAMEN ...
+    Devuelve cortes x aproximados:
+    - x_desc_start
+    - x_importe_start
+    - x_saldo_start
     """
-    merged: List[str] = []
-    i = 0
-
-    while i < len(lines):
-        cur = _clean_text(lines[i])
-
-        if i + 1 < len(lines):
-            nxt = _clean_text(lines[i + 1])
-
-            m_ddmm = DATE_DDMM_RE.match(cur)
-            m_year = YEAR_LINE_RE.match(nxt)
-
-            if m_ddmm and m_year:
-                ddmm = m_ddmm.group(1)
-                year = m_year.group(1)
-                rest = re.sub(r"^\s*/?20\d{2}\s*", "", nxt).strip()
-                joined = f"{ddmm}/{year}"
-                if rest:
-                    joined += f" {rest}"
-                merged.append(joined)
-                i += 2
-                continue
-
-        merged.append(cur)
-        i += 1
-
-    return merged
-
-
-def _group_blocks(lines: List[str]) -> List[str]:
-    """
-    Agrupa líneas en bloques de movimientos.
-    Un movimiento empieza cuando aparece una fecha completa dd/mm/yyyy.
-    Todo lo que siga hasta la próxima fecha se considera parte del mismo bloque.
-    """
-    blocks: List[str] = []
-    current: List[str] = []
-
-    for line in lines:
-        line = _clean_text(line)
-        if not line:
+    for row in rows:
+        txt = _row_text(row)
+        if not _is_probable_header(txt):
             continue
 
-        if _is_header_or_noise(line):
-            continue
+        fecha_x = None
+        comp_x = None
+        imp_x = None
+        saldo_x = None
 
-        if DATE_FULL_RE.search(line):
-            if current:
-                blocks.append(" ".join(current).strip())
-            current = [line]
+        for w in row.words:
+            t = _norm(w["text"]).upper()
+            x0 = float(w["x0"])
+            if t.startswith("FECHA"):
+                fecha_x = x0
+            elif t.startswith("COMPROBANTE"):
+                comp_x = x0
+            elif t.startswith("IMPORTE"):
+                imp_x = x0
+            elif t.startswith("SALDO"):
+                saldo_x = x0
+
+        if imp_x is not None and saldo_x is not None:
+            desc_start = comp_x if comp_x is not None else (fecha_x + 60 if fecha_x is not None else 120)
+            return desc_start, imp_x, saldo_x
+
+    return None
+
+
+def _extract_row_fields(row: WordRow, x_desc_start: float, x_importe_start: float, x_saldo_start: float):
+    left = []
+    middle = []
+    right = []
+
+    for w in row.words:
+        x0 = float(w["x0"])
+        txt = _norm(w["text"])
+
+        if x0 < x_desc_start:
+            left.append(txt)
+        elif x0 < x_importe_start:
+            middle.append(txt)
+        elif x0 < x_saldo_start:
+            right.append(("IMP", txt, x0))
         else:
-            if current:
-                current.append(line)
+            right.append(("SAL", txt, x0))
 
-    if current:
-        blocks.append(" ".join(current).strip())
+    left_txt = _norm(" ".join(left))
+    middle_txt = _norm(" ".join(middle))
 
-    return blocks
+    imp_tokens = [t for kind, t, _x in right if kind == "IMP"]
+    sal_tokens = [t for kind, t, _x in right if kind == "SAL"]
+
+    importe_txt = _norm(" ".join(imp_tokens))
+    saldo_txt = _norm(" ".join(sal_tokens))
+
+    return left_txt, middle_txt, importe_txt, saldo_txt
 
 
-def _parse_block(block: str) -> Optional[Dict]:
+def _parse_visual_row(
+    left_txt: str,
+    middle_txt: str,
+    importe_txt: str,
+    saldo_txt: str,
+) -> Optional[ParsedRow]:
     """
-    Espera algo como:
-    03/07/2025 28912520 GRAVAMEN LEY 25413 S/CRED $ -130,73 $ 557.846,65
-    o variantes con texto adicional.
+    left_txt suele traer fecha
+    middle_txt suele traer comprobante + descripción
     """
-    block = _clean_text(block)
-    if not block:
+    if not left_txt and not middle_txt:
         return None
 
-    m_date = DATE_FULL_RE.search(block)
-    if not m_date:
+    left_parts = left_txt.split()
+    if not left_parts:
         return None
 
-    fecha_txt = m_date.group(1)
-    fecha = pd.to_datetime(fecha_txt, dayfirst=True, errors="coerce")
+    fecha_txt = left_parts[0]
+    if not DATE_FULL_RE.match(fecha_txt):
+        return None
+
+    fecha = _to_date(fecha_txt)
     if pd.isna(fecha):
         return None
 
-    amounts = AMOUNT_RE.findall(block)
-    if len(amounts) < 2:
+    desc = _norm(middle_txt)
+    if not desc:
         return None
 
-    importe_txt = amounts[-2]
-    saldo_pdf_txt = amounts[-1]
+    # quitar comprobante al inicio
+    desc_parts = desc.split(" ", 1)
+    if desc_parts and re.fullmatch(r"\d{4,}", desc_parts[0]):
+        desc = desc_parts[1].strip() if len(desc_parts) > 1 else ""
 
-    importe = _coerce_amount(importe_txt)
-    saldo_pdf = _coerce_amount(saldo_pdf_txt)
-
-    debito = abs(importe) if importe < 0 else 0.0
-    credito = abs(importe) if importe > 0 else 0.0
-
-    # quitar fecha al inicio
-    tail = block[m_date.end():].strip()
-
-    # quitar importes del final
-    tail = re.sub(
-        rf"{re.escape(importe_txt)}\s*{re.escape(saldo_pdf_txt)}\s*$",
-        "",
-        tail,
-        flags=re.IGNORECASE,
-    ).strip()
-
-    # quitar comprobante si está al inicio
-    tail_parts = tail.split(" ", 1)
-    if tail_parts and COMPROBANTE_RE.match(tail_parts[0]):
-        tail = tail_parts[1].strip() if len(tail_parts) > 1 else ""
-
-    descripcion = _clean_text(tail)
-
-    if not descripcion:
+    if not desc:
         return None
 
-    return {
-        "Fecha": fecha,
-        "Descripción": descripcion,
-        "Débito": round(debito, 2),
-        "Crédito": round(credito, 2),
-        "Saldo_PDF": round(saldo_pdf, 2),
-    }
+    if not _is_amount(importe_txt) or not _is_amount(saldo_txt):
+        return None
+
+    importe = _to_amount(importe_txt)
+    saldo_pdf = _to_amount(saldo_txt)
+
+    deb = abs(importe) if importe < 0 else 0.0
+    cred = abs(importe) if importe > 0 else 0.0
+
+    return ParsedRow(
+        fecha=fecha,
+        descripcion=desc,
+        debito=round(deb, 2),
+        credito=round(cred, 2),
+        saldo_pdf=round(saldo_pdf, 2),
+    )
+
+
+def _merge_page_cut_rows(prev_parts: Optional[dict], current_parts: dict) -> Tuple[Optional[dict], Optional[dict]]:
+    """
+    Une casos como:
+      fin página:   left='03/07'   middle='' importe='' saldo=''
+      pág siguiente left='/2025'   middle='28912520 ...' importe='$ -130,73' saldo='$ 557.846,65'
+    """
+    if not prev_parts:
+        return None, current_parts
+
+    prev_left = _norm(prev_parts.get("left", ""))
+    cur_left = _norm(current_parts.get("left", ""))
+
+    if DATE_DDMM_RE.match(prev_left) and YEAR_RE.match(cur_left):
+        full_date = f"{prev_left}/{YEAR_RE.match(cur_left).group(1)}"
+        merged = {
+            "left": full_date,
+            "middle": _norm(current_parts.get("middle", "")),
+            "importe": _norm(current_parts.get("importe", "")),
+            "saldo": _norm(current_parts.get("saldo", "")),
+        }
+        return None, merged
+
+    return prev_parts, current_parts
 
 
 def parse_pdf(raw_bytes: bytes) -> pd.DataFrame:
-    """
-    Nación 2
-    - Ignora Comprobante
-    - Importe negativo => Débito
-    - Importe positivo => Crédito
-    - El PDF viene en orden inverso; se exporta en orden cronológico
-    - El saldo del PDF es saldo ANTERIOR al movimiento
-    - Saldo real por fila = saldo de la fila superior del PDF
-      => en cronológico: Saldo = Saldo_PDF.shift(-1)
-      y el último se calcula como saldo_pdf - débito + crédito
-    - Une correctamente movimientos partidos por corte de página
-    """
-    raw_lines = _extract_lines_from_pdf(raw_bytes)
-    merged_lines = _merge_split_dates(raw_lines)
-    blocks = _group_blocks(merged_lines)
+    rows_out: List[ParsedRow] = []
+    carry_partial: Optional[dict] = None
 
-    rows: List[Dict] = []
-    for block in blocks:
-        rec = _parse_block(block)
-        if rec:
-            rows.append(rec)
+    with pdfplumber.open(io.BytesIO(raw_bytes)) as pdf:
+        for page in pdf.pages:
+            words = page.extract_words(
+                keep_blank_chars=False,
+                use_text_flow=False,
+                x_tolerance=2,
+                y_tolerance=2,
+            ) or []
 
-    if not rows:
+            if not words:
+                continue
+
+            grouped = _group_words_to_rows(words)
+            header_pos = _find_header_positions(grouped)
+
+            if not header_pos:
+                continue
+
+            x_desc_start, x_importe_start, x_saldo_start = header_pos
+
+            page_parts: List[dict] = []
+
+            for row in grouped:
+                txt = _row_text(row)
+                if _is_noise_text(txt) or _is_probable_header(txt):
+                    continue
+
+                left_txt, middle_txt, importe_txt, saldo_txt = _extract_row_fields(
+                    row, x_desc_start, x_importe_start, x_saldo_start
+                )
+
+                if not left_txt and not middle_txt and not importe_txt and not saldo_txt:
+                    continue
+
+                page_parts.append({
+                    "left": left_txt,
+                    "middle": middle_txt,
+                    "importe": importe_txt,
+                    "saldo": saldo_txt,
+                })
+
+            if not page_parts:
+                continue
+
+            normalized_parts: List[dict] = []
+
+            # unir arrastre de página anterior con primera fila actual si corresponde
+            first = page_parts[0]
+            carry_partial, first_merged = _merge_page_cut_rows(carry_partial, first)
+
+            if first_merged is not None:
+                normalized_parts.append(first_merged)
+
+            normalized_parts.extend(page_parts[1:])
+
+            # detectar si la última fila quedó cortada al final de página
+            if normalized_parts:
+                last = normalized_parts[-1]
+                last_left = _norm(last.get("left", ""))
+                last_mid = _norm(last.get("middle", ""))
+                last_imp = _norm(last.get("importe", ""))
+                last_sal = _norm(last.get("saldo", ""))
+
+                if DATE_DDMM_RE.match(last_left) and not last_mid and not last_imp and not last_sal:
+                    carry_partial = last
+                    normalized_parts = normalized_parts[:-1]
+                else:
+                    carry_partial = None
+
+            for part in normalized_parts:
+                parsed = _parse_visual_row(
+                    left_txt=part.get("left", ""),
+                    middle_txt=part.get("middle", ""),
+                    importe_txt=part.get("importe", ""),
+                    saldo_txt=part.get("saldo", ""),
+                )
+                if parsed is not None:
+                    rows_out.append(parsed)
+
+    if not rows_out:
         return pd.DataFrame(columns=["Fecha", "Descripción", "Débito", "Crédito", "Saldo"])
 
-    df = pd.DataFrame(rows)
+    # El PDF viene del más nuevo al más viejo.
+    # Para exportar cronológico:
+    df = pd.DataFrame([{
+        "Fecha": r.fecha,
+        "Descripción": r.descripcion,
+        "Débito": r.debito,
+        "Crédito": r.credito,
+        "Saldo_PDF": r.saldo_pdf,
+    } for r in rows_out])
 
-    # El PDF viene del más nuevo al más viejo -> pasar a cronológico
     df = df.iloc[::-1].reset_index(drop=True)
 
-    # Saldo real posterior al movimiento:
-    # saldo de la fila siguiente en cronológico (= fila superior en el PDF)
+    # Nación 2:
+    # el saldo mostrado en cada fila del PDF es el saldo ANTERIOR al movimiento.
+    # El saldo real posterior de cada movimiento es el saldo de la fila superior del PDF.
+    # En orden cronológico => shift(-1)
     df["Saldo"] = df["Saldo_PDF"].shift(-1)
 
-    # último movimiento cronológico: calcular saldo final
-    last_idx = len(df) - 1
-    df.loc[last_idx, "Saldo"] = (
-        float(df.loc[last_idx, "Saldo_PDF"])
-        - float(df.loc[last_idx, "Débito"])
-        + float(df.loc[last_idx, "Crédito"])
-    )
+    if not df.empty:
+        i = len(df) - 1
+        df.loc[i, "Saldo"] = (
+            float(df.loc[i, "Saldo_PDF"])
+            - float(df.loc[i, "Débito"])
+            + float(df.loc[i, "Crédito"])
+        )
 
-    df = df[["Fecha", "Descripción", "Débito", "Crédito", "Saldo"]].copy()
-
-    return df
+    return df[["Fecha", "Descripción", "Débito", "Crédito", "Saldo"]].copy()
