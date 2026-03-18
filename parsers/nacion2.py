@@ -10,11 +10,11 @@ import pdfplumber
 
 
 DATE_START_RE = re.compile(r"^\s*(\d{2}/\d{2})(?:\s|$)")
-YEAR_INLINE_RE = re.compile(r"/(20\d{2})")
-YEAR_ONLY_RE = re.compile(r"^\s*/(20\d{2})\s*$")
+YEAR_ONLY_RE = re.compile(r"^\s*/(20\d{2})(?:\s|$)")
+YEAR_ANY_RE = re.compile(r"/(20\d{2})")
 COMPROBANTE_ONLY_RE = re.compile(r"^\s*\d{4,}\s*$")
 
-# monto argentino con signo, con o sin $
+# solo número monetario, sin el $
 AMOUNT_TOKEN_RE = re.compile(r"-?\d{1,3}(?:\.\d{3})*,\d{2}")
 
 
@@ -75,12 +75,6 @@ def _build_blocks(lines: List[str]) -> List[List[str]]:
     """
     Cada movimiento empieza cuando aparece una línea que arranca con dd/mm.
     Todo lo siguiente hasta la próxima fecha pertenece al mismo movimiento.
-    Esto resuelve automáticamente cortes de página y casos tipo:
-      03/12
-      /2025 12922 DB CREDIN TRANSFERENCIA
-      $
-      -114.864,00
-      $ 283.053,98
     """
     blocks: List[List[str]] = []
     current: List[str] = []
@@ -106,37 +100,111 @@ def _build_blocks(lines: List[str]) -> List[List[str]]:
     return blocks
 
 
-def _extract_amounts_in_order(block: List[str]) -> List[str]:
-    """
-    Devuelve todos los importes del bloque en el orden visual/textual en que aparecen.
-    Ignora los '$' sueltos.
-    """
-    nums: List[str] = []
-    for line in block:
-        line = _clean(line)
-        found = AMOUNT_TOKEN_RE.findall(line)
-        if found:
-            nums.extend(found)
-    return nums
-
-
 def _extract_year(block: List[str]) -> str:
     for line in block:
         s = _clean(line)
+
         m = YEAR_ONLY_RE.match(s)
         if m:
             return m.group(1)
 
-        m2 = YEAR_INLINE_RE.search(s)
+        m2 = YEAR_ANY_RE.search(s)
         if m2:
             return m2.group(1)
 
     return "2025"
 
 
+def _line_amounts(line: str) -> List[str]:
+    return AMOUNT_TOKEN_RE.findall(_clean(line))
+
+
+def _resolve_importe_saldo(block: List[str]) -> tuple[Optional[float], Optional[float]]:
+    """
+    Regla correcta para Nación 2:
+
+    1) Si una línea /2025 trae 2 montos => primero = importe, segundo = saldo
+       Ej: /2025 -872.555,00 1.653.432,31
+
+    2) Si una línea /2025 trae 1 monto y una línea previa trae 1 monto,
+       la de /2025 = importe y la previa = saldo
+       Ej:
+         12924 DEB.TRAN.INTERB $ 168.189,98
+         /2025 -138.153,00
+
+    3) Si una línea normal trae 2 montos => primero = importe, segundo = saldo
+       Ej:
+         ... $ -8.788,50 $ 193.947,13
+
+    4) Fallback final:
+       usar los dos últimos montos del bloque como importe/saldo.
+    """
+    year_lines = []
+    other_lines = []
+
+    for line in block:
+        s = _clean(line)
+        amounts = _line_amounts(s)
+        if not amounts:
+            continue
+
+        rec = {"line": s, "amounts": amounts}
+
+        if YEAR_ONLY_RE.match(s) or s.startswith("/202"):
+            year_lines.append(rec)
+        else:
+            other_lines.append(rec)
+
+    # Regla 1
+    for rec in year_lines:
+        amts = rec["amounts"]
+        if len(amts) >= 2:
+            return _to_amount(amts[0]), _to_amount(amts[1])
+
+    # Regla 2
+    for rec in year_lines:
+        amts = rec["amounts"]
+        if len(amts) == 1:
+            importe = _to_amount(amts[0])
+
+            # buscar el último monto no-year previo al year line
+            year_idx = block.index(rec["line"]) if rec["line"] in block else -1
+            prev_candidates = []
+            for i, line in enumerate(block):
+                s = _clean(line)
+                if i >= year_idx:
+                    break
+                if YEAR_ONLY_RE.match(s) or s.startswith("/202"):
+                    continue
+                am2 = _line_amounts(s)
+                if len(am2) == 1:
+                    prev_candidates.append(am2[0])
+                elif len(am2) >= 2:
+                    prev_candidates.append(am2[-1])
+
+            if prev_candidates:
+                saldo = _to_amount(prev_candidates[-1])
+                return importe, saldo
+
+    # Regla 3
+    for rec in other_lines:
+        amts = rec["amounts"]
+        if len(amts) >= 2:
+            return _to_amount(amts[0]), _to_amount(amts[1])
+
+    # Regla 4
+    all_amounts: List[str] = []
+    for line in block:
+        all_amounts.extend(_line_amounts(line))
+
+    if len(all_amounts) >= 2:
+        return _to_amount(all_amounts[-2]), _to_amount(all_amounts[-1])
+
+    return None, None
+
+
 def _strip_line_for_description(line: str, is_first_line: bool) -> str:
     s = _clean(line)
-
     if not s:
         return ""
 
@@ -151,7 +219,6 @@ def _strip_line_for_description(line: str, is_first_line: bool) -> str:
     if COMPROBANTE_ONLY_RE.match(s):
         return ""
 
-    # sacar importes y símbolos de dinero de la descripción
     s = s.replace("$", " ")
     s = AMOUNT_TOKEN_RE.sub(" ", s)
     s = _clean(s)
@@ -175,19 +242,9 @@ def _parse_block(block: List[str]) -> Optional[Dict]:
     if pd.isna(fecha):
         return None
 
-    amount_tokens = _extract_amounts_in_order(block)
-
-    # Regla clave: todo movimiento válido debe tener sí o sí:
-    # penúltimo monto = importe del movimiento
-    # último monto = saldo PDF
-    if len(amount_tokens) < 2:
+    importe, saldo_pdf = _resolve_importe_saldo(block)
+    if importe is None or saldo_pdf is None:
         return None
-
-    importe_txt = amount_tokens[-2]
-    saldo_pdf_txt = amount_tokens[-1]
-
-    importe = _to_amount(importe_txt)
-    saldo_pdf = _to_amount(saldo_pdf_txt)
 
     debito = abs(importe) if importe < 0 else 0.0
     credito = abs(importe) if importe > 0 else 0.0
@@ -243,10 +300,10 @@ def parse_pdf(raw_bytes: bytes) -> pd.DataFrame:
     # salida: cronológico
     df = df.iloc[::-1].reset_index(drop=True)
 
-    # saldo real posterior al movimiento
+    # Saldo real posterior al movimiento
     df["Saldo"] = df["Saldo_PDF"].shift(-1)
 
-    # último movimiento cronológico
+    # Último movimiento cronológico
     last_idx = len(df) - 1
     df.loc[last_idx, "Saldo"] = (
         float(df.loc[last_idx, "Saldo_PDF"])
