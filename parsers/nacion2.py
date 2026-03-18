@@ -3,20 +3,17 @@ from __future__ import annotations
 
 import io
 import re
+from dataclasses import dataclass
 from typing import List, Optional, Dict
 
 import pandas as pd
 import pdfplumber
 
 
-DATE_LINE_RE = re.compile(r"^\s*(\d{2}/\d{2})(?:\s|$)")
-YEAR_ONLY_RE = re.compile(r"^\s*/(20\d{2})\s*$")
-COMPROBANTE_ONLY_RE = re.compile(r"^\s*\d{4,}\s*$")
-
-# número monetario argentino, con o sin $
-AMOUNT_RE = re.compile(
-    r"-?\$?\s*(?:\d{1,3}(?:\.\d{3})+|\d+)(?:,\d{2})-?"
-)
+DATE_DDMM_RE = re.compile(r"^\d{2}/\d{2}$")
+YEAR_RE = re.compile(r"^/?(20\d{2})$")
+COMPROBANTE_RE = re.compile(r"^\d{4,}$")
+AMOUNT_RE = re.compile(r"^-?(?:\d{1,3}(?:\.\d{3})+|\d+)(?:,\d{2})-?$")
 
 
 def _clean(s: str) -> str:
@@ -24,10 +21,7 @@ def _clean(s: str) -> str:
 
 
 def _to_amount(s: str) -> float:
-    s = _clean(s)
-    s = s.replace("\u2212", "-").replace("−", "-")
-    s = s.replace("$", "").replace(" ", "")
-
+    s = _clean(s).replace("\u2212", "-").replace("−", "-").replace("$", "").replace(" ", "")
     if not s:
         return 0.0
 
@@ -37,7 +31,6 @@ def _to_amount(s: str) -> float:
         s = s[:-1]
 
     s = s.replace(".", "").replace(",", ".")
-
     try:
         v = float(s)
     except Exception:
@@ -46,221 +39,330 @@ def _to_amount(s: str) -> float:
     return -v if neg else v
 
 
-def _extract_lines(raw_bytes: bytes) -> List[str]:
-    lines: List[str] = []
-
-    with pdfplumber.open(io.BytesIO(raw_bytes)) as pdf:
-        for page in pdf.pages:
-            txt = page.extract_text() or ""
-            for line in txt.splitlines():
-                line = line.rstrip()
-                if line is not None:
-                    lines.append(line)
-
-    return lines
+@dataclass
+class MovimientoParcial:
+    ddmm: str
+    year: Optional[str]
+    comprobante: str
+    descripcion: List[str]
+    importe: Optional[float]
+    saldo_pdf: Optional[float]
 
 
-def _is_header_or_noise(line: str) -> bool:
-    up = _clean(line).upper()
+def _group_rows(words: List[dict], y_tol: float = 3.5) -> List[List[dict]]:
+    rows: List[List[dict]] = []
 
-    if not up:
-        return True
+    for w in sorted(words, key=lambda z: (float(z["top"]), float(z["x0"]))):
+        y = float(w["top"])
+        placed = False
 
-    noise = [
-        "ULTIMOS MOVIMIENTOS",
-        "ÚLTIMOS MOVIMIENTOS",
-        "FECHA COMPROBANTE CONCEPTO IMPORTE SALDO",
-        "FECHA COMPROBANTE",
-        "CONCEPTO IMPORTE SALDO",
-    ]
-    return any(x in up for x in noise)
+        for row in rows:
+            row_y = sum(float(a["top"]) for a in row) / len(row)
+            if abs(row_y - y) <= y_tol:
+                row.append(w)
+                placed = True
+                break
+
+        if not placed:
+            rows.append([w])
+
+    for row in rows:
+        row.sort(key=lambda z: float(z["x0"]))
+
+    return rows
 
 
-def _build_blocks(lines: List[str]) -> List[List[str]]:
+def _row_tokens(row: List[dict]):
+    out = []
+    for w in row:
+        out.append({
+            "text": _clean(w["text"]),
+            "x0": float(w["x0"]),
+            "x1": float(w["x1"]),
+            "top": float(w["top"]),
+        })
+    return out
+
+
+def _find_header_cutoffs(rows: List[List[dict]]):
     """
-    Cada movimiento empieza cuando aparece una línea que arranca con dd/mm.
-    Todo lo siguiente hasta la próxima fecha pertenece al mismo movimiento.
-    Esto une naturalmente cortes de página como:
-      03/12
-      /2025 12922 DB CREDIN TRANSFERENCIA
-      $
-      -114.864,00
-      $ 283.053,98
+    Busca la fila de encabezado y toma cortes de columnas.
     """
-    blocks: List[List[str]] = []
-    current: List[str] = []
+    for row in rows:
+        toks = _row_tokens(row)
+        txt = " ".join(t["text"].upper() for t in toks)
 
-    for raw in lines:
-        line = raw.rstrip("\n")
-        s = line.strip()
+        if "FECHA" in txt and "COMPROBANTE" in txt and "IMPORTE" in txt and "SALDO" in txt:
+            x_comp = None
+            x_imp = None
+            x_sal = None
 
-        if not s:
+            for t in toks:
+                up = t["text"].upper()
+                if up.startswith("COMPROBANTE"):
+                    x_comp = t["x0"]
+                elif up.startswith("IMPORTE"):
+                    x_imp = t["x0"]
+                elif up.startswith("SALDO"):
+                    x_sal = t["x0"]
+
+            if x_comp is not None and x_imp is not None and x_sal is not None:
+                return x_comp, x_imp, x_sal
+
+    return None
+
+
+def _classify_token(text: str) -> bool:
+    return bool(AMOUNT_RE.match(text))
+
+
+def _parse_page(page) -> List[MovimientoParcial]:
+    words = page.extract_words(
+        keep_blank_chars=False,
+        use_text_flow=False,
+        x_tolerance=1,
+        y_tolerance=1,
+    ) or []
+
+    if not words:
+        return []
+
+    rows = _group_rows(words)
+    cutoffs = _find_header_cutoffs(rows)
+    if not cutoffs:
+        return []
+
+    x_comp, x_imp, x_sal = cutoffs
+
+    movimientos: List[MovimientoParcial] = []
+    cur: Optional[MovimientoParcial] = None
+
+    for row in rows:
+        toks = _row_tokens(row)
+        if not toks:
             continue
-        if _is_header_or_noise(s):
+
+        row_text = " ".join(t["text"] for t in toks).upper()
+
+        # saltar encabezados y ruido obvio
+        if (
+            "FECHA" in row_text and "COMPROBANTE" in row_text and "IMPORTE" in row_text and "SALDO" in row_text
+        ) or "ULTIMOS MOVIMIENTOS" in row_text or "ÚLTIMOS MOVIMIENTOS" in row_text:
             continue
 
-        if DATE_LINE_RE.match(s):
-            if current:
-                blocks.append(current)
-            current = [s]
+        # dividir por columnas
+        left = [t for t in toks if t["x0"] < x_comp]
+        mid = [t for t in toks if x_comp <= t["x0"] < x_imp]
+        imp = [t for t in toks if x_imp <= t["x0"] < x_sal]
+        sal = [t for t in toks if t["x0"] >= x_sal]
+
+        left_txts = [t["text"] for t in left if t["text"]]
+        mid_txts = [t["text"] for t in mid if t["text"]]
+        imp_txts = [t["text"] for t in imp if t["text"] not in {"$"}]
+        sal_txts = [t["text"] for t in sal if t["text"] not in {"$"}]
+
+        # ¿arranca movimiento nuevo?
+        ddmm = None
+        year = None
+
+        for tx in left_txts:
+            if DATE_DDMM_RE.match(tx):
+                ddmm = tx
+                break
+
+        for tx in left_txts:
+            m_year = YEAR_RE.match(tx)
+            if m_year:
+                year = m_year.group(1)
+                break
+
+        if ddmm is not None:
+            if cur is not None:
+                movimientos.append(cur)
+
+            comprobante = ""
+            descripcion = []
+
+            if mid_txts:
+                if COMPROBANTE_RE.match(mid_txts[0]):
+                    comprobante = mid_txts[0]
+                    descripcion = mid_txts[1:]
+                else:
+                    descripcion = mid_txts[:]
+
+            importe_val = None
+            saldo_val = None
+
+            imp_nums = [x for x in imp_txts if _classify_token(x)]
+            sal_nums = [x for x in sal_txts if _classify_token(x)]
+
+            if imp_nums:
+                importe_val = _to_amount(imp_nums[-1])
+            if sal_nums:
+                saldo_val = _to_amount(sal_nums[-1])
+
+            cur = MovimientoParcial(
+                ddmm=ddmm,
+                year=year,
+                comprobante=comprobante,
+                descripcion=descripcion,
+                importe=importe_val,
+                saldo_pdf=saldo_val,
+            )
+            continue
+
+        # continuación del movimiento actual
+        if cur is None:
+            continue
+
+        # completar año si viene en línea aparte
+        if cur.year is None:
+            for tx in left_txts:
+                m_year = YEAR_RE.match(tx)
+                if m_year:
+                    cur.year = m_year.group(1)
+                    break
+
+        # completar comprobante si vino abajo
+        if not cur.comprobante and mid_txts:
+            if COMPROBANTE_RE.match(mid_txts[0]):
+                cur.comprobante = mid_txts[0]
+                extra_desc = mid_txts[1:]
+            else:
+                extra_desc = mid_txts
         else:
-            if current:
-                current.append(s)
+            extra_desc = mid_txts
 
-    if current:
-        blocks.append(current)
+        if extra_desc:
+            cur.descripcion.extend(extra_desc)
 
-    return blocks
+        # importe
+        imp_nums = [x for x in imp_txts if _classify_token(x)]
+        if imp_nums:
+            cur.importe = _to_amount(imp_nums[-1])
+
+        # saldo
+        sal_nums = [x for x in sal_txts if _classify_token(x)]
+        if sal_nums:
+            cur.saldo_pdf = _to_amount(sal_nums[-1])
+
+        # caso especial: cuando el importe cae debajo del año y sigue estando
+        # en la columna IMPORTE aunque visualmente parezca otra línea
+        # o cuando saldo queda todavía en la columna IMPORTE por desfasaje mínimo
+        if cur.importe is None and cur.saldo_pdf is None:
+            all_nums = [t["text"] for t in toks if _classify_token(t["text"])]
+            if len(all_nums) >= 2:
+                cur.importe = _to_amount(all_nums[-2])
+                cur.saldo_pdf = _to_amount(all_nums[-1])
+            elif len(all_nums) == 1:
+                # si ya tengo importe, esto probablemente sea saldo; si no, importe
+                v = _to_amount(all_nums[0])
+                if cur.importe is None:
+                    cur.importe = v
+                else:
+                    cur.saldo_pdf = v
+
+    if cur is not None:
+        movimientos.append(cur)
+
+    return movimientos
 
 
-def _parse_block(block: List[str]) -> Optional[Dict]:
-    if not block:
-        return None
+def _merge_cross_page(movs: List[MovimientoParcial]) -> List[MovimientoParcial]:
+    """
+    Une movimientos cortados entre páginas:
+    - puede venir fecha sola al final de página
+    - y el resto al inicio de la siguiente
+    """
+    merged: List[MovimientoParcial] = []
 
-    first = _clean(block[0])
-    m_date = DATE_LINE_RE.match(first)
-    if not m_date:
-        return None
+    for m in movs:
+        if (
+            merged
+            and merged[-1].year is None
+            and not merged[-1].descripcion
+            and merged[-1].importe is None
+            and merged[-1].saldo_pdf is None
+        ):
+            prev = merged.pop()
 
-    ddmm = m_date.group(1)
+            ddmm = prev.ddmm
+            year = m.year
+            comprobante = m.comprobante
+            descripcion = m.descripcion[:]
+            importe = m.importe
+            saldo_pdf = m.saldo_pdf
 
-    # año: buscar línea /2025 dentro del bloque
-    year = None
-    for ln in block:
-        m_year = YEAR_ONLY_RE.match(_clean(ln))
-        if m_year:
-            year = m_year.group(1)
-            break
-    if year is None:
-        # fallback por si viniera en alguna misma línea
-        joined_year = re.search(r"/(20\d{2})", " ".join(block))
-        year = joined_year.group(1) if joined_year else "2025"
+            merged.append(
+                MovimientoParcial(
+                    ddmm=ddmm,
+                    year=year,
+                    comprobante=comprobante,
+                    descripcion=descripcion,
+                    importe=importe,
+                    saldo_pdf=saldo_pdf,
+                )
+            )
+        else:
+            merged.append(m)
 
-    fecha = pd.to_datetime(f"{ddmm}/{year}", format="%d/%m/%Y", errors="coerce")
-    if pd.isna(fecha):
-        return None
-
-    # Unimos TODO el bloque para tomar los importes reales aunque estén partidos
-    joined = " ".join(_clean(x) for x in block if _clean(x))
-    joined = _clean(joined)
-
-    amount_tokens = AMOUNT_RE.findall(joined)
-
-    # Todo movimiento válido debe tener sí o sí:
-    # penúltimo importe = movimiento
-    # último importe = saldo PDF
-    if len(amount_tokens) < 2:
-        return None
-
-    importe_txt = amount_tokens[-2]
-    saldo_pdf_txt = amount_tokens[-1]
-
-    importe = _to_amount(importe_txt)
-    saldo_pdf = _to_amount(saldo_pdf_txt)
-
-    debito = abs(importe) if importe < 0 else 0.0
-    credito = abs(importe) if importe > 0 else 0.0
-
-    # ---------------------------
-    # Construcción de descripción
-    # ---------------------------
-    desc_parts: List[str] = []
-
-    for i, raw_line in enumerate(block):
-        line = _clean(raw_line)
-        if not line:
-            continue
-
-        # quitar fecha al inicio de la primera línea
-        if i == 0:
-            line = re.sub(r"^\d{2}/\d{2}\s*", "", line).strip()
-
-        # quitar línea solo año
-        if YEAR_ONLY_RE.match(line):
-            continue
-
-        # quitar comprobante si aparece solo
-        if COMPROBANTE_ONLY_RE.match(line):
-            continue
-
-        # quitar comprobante al inicio de la línea
-        line = re.sub(r"^\d{4,}\s+", "", line).strip()
-
-        # eliminar símbolos $ sueltos
-        line = line.replace("$", " ")
-        line = _clean(line)
-
-        if line:
-            desc_parts.append(line)
-
-    descripcion = " ".join(desc_parts)
-    descripcion = _clean(descripcion)
-
-    # sacar los dos últimos importes de la descripción
-    # importante: solo los últimos dos, no tocar texto del medio
-    for amt in [importe_txt, saldo_pdf_txt]:
-        pos = descripcion.rfind(amt)
-        if pos != -1:
-            descripcion = _clean((descripcion[:pos] + " " + descripcion[pos + len(amt):]).strip())
-
-    descripcion = descripcion.replace("$", " ")
-    descripcion = _clean(descripcion)
-
-    # quitar año colgado al principio si quedó como "/2025"
-    descripcion = re.sub(r"^/20\d{2}\s*", "", descripcion).strip()
-
-    # quitar comprobante al principio si sobrevivió
-    descripcion = re.sub(r"^\d{4,}\s+", "", descripcion).strip()
-
-    descripcion = _clean(descripcion)
-
-    if not descripcion:
-        return None
-
-    return {
-        "Fecha": fecha,
-        "Descripción": descripcion,
-        "Débito": round(debito, 2),
-        "Crédito": round(credito, 2),
-        "Saldo_PDF": round(saldo_pdf, 2),
-    }
+    return merged
 
 
 def parse_pdf(raw_bytes: bytes) -> pd.DataFrame:
-    """
-    Nación 2
-    - Ignora Comprobante
-    - Importe negativo => Débito
-    - Importe positivo => Crédito
-    - El PDF viene del más nuevo al más viejo
-    - El saldo del PDF es el saldo anterior al movimiento
-    - El saldo real posterior al movimiento es el de la fila superior del PDF
-      => en cronológico: Saldo = Saldo_PDF.shift(-1)
-      => el último se calcula
-    - Une correctamente cortes de página y renglones con '$' separado
-    """
-    lines = _extract_lines(raw_bytes)
-    blocks = _build_blocks(lines)
+    movimientos: List[MovimientoParcial] = []
 
-    rows = []
-    for block in blocks:
-        rec = _parse_block(block)
-        if rec is not None:
-            rows.append(rec)
+    with pdfplumber.open(io.BytesIO(raw_bytes)) as pdf:
+        for page in pdf.pages:
+            movimientos.extend(_parse_page(page))
+
+    movimientos = _merge_cross_page(movimientos)
+
+    rows: List[Dict] = []
+    for m in movimientos:
+        if not m.ddmm or not m.year:
+            continue
+        if m.importe is None or m.saldo_pdf is None:
+            continue
+
+        fecha = pd.to_datetime(f"{m.ddmm}/{m.year}", format="%d/%m/%Y", errors="coerce")
+        if pd.isna(fecha):
+            continue
+
+        descripcion = _clean(" ".join(m.descripcion))
+        if not descripcion:
+            continue
+
+        importe = float(m.importe)
+        saldo_pdf = float(m.saldo_pdf)
+
+        debito = abs(importe) if importe < 0 else 0.0
+        credito = abs(importe) if importe > 0 else 0.0
+
+        rows.append(
+            {
+                "Fecha": fecha,
+                "Descripción": descripcion,
+                "Débito": round(debito, 2),
+                "Crédito": round(credito, 2),
+                "Saldo_PDF": round(saldo_pdf, 2),
+            }
+        )
 
     if not rows:
         return pd.DataFrame(columns=["Fecha", "Descripción", "Débito", "Crédito", "Saldo"])
 
     df = pd.DataFrame(rows)
 
-    # El PDF viene en orden inverso (más nuevo -> más viejo)
-    # Lo pasamos a cronológico
+    # PDF: más nuevo -> más viejo
+    # salida: cronológico
     df = df.iloc[::-1].reset_index(drop=True)
 
-    # Saldo real posterior al movimiento
+    # Nación 2: el saldo del PDF es el saldo ANTERIOR al movimiento
+    # El saldo real posterior es el de la fila superior del PDF
+    # => en cronológico: shift(-1)
     df["Saldo"] = df["Saldo_PDF"].shift(-1)
 
-    # Último movimiento cronológico: calcular saldo final
     last_idx = len(df) - 1
     df.loc[last_idx, "Saldo"] = (
         float(df.loc[last_idx, "Saldo_PDF"])
