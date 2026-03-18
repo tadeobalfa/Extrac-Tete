@@ -1789,7 +1789,7 @@ if do_convert:
                     fin = _ensure_columns_for_export(fin)
 
                 # mantener comportamiento actual de orden
-                if detected_bank != "SUPERVIELLE 2":
+                if detected_bank not in {"SUPERVIELLE 2", "NACION 2"}:
                     fin = _sort_rows_by_fecha(fin)
 
             _log(f"✓ {name}: {detected_bank} | {len(fin)} filas en {time.time() - t0:.1f}s")
