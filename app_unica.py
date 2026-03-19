@@ -2463,7 +2463,6 @@ if do_convert:
                 first_sheet = next(iter(account_map))
                 result_preview = _append_blocks(account_map[first_sheet])
 
-
                 buf = io.BytesIO()
                 with pd.ExcelWriter(buf, engine="xlsxwriter", datetime_format="dd/mm/yyyy") as writer:
                     for cta in sorted(account_map.keys()):
@@ -2485,38 +2484,36 @@ if do_convert:
 
                 excel_name = f"EXTRACTOS_{effective_bank}.xlsx"
 
-
-            first_name, _first_fin, _first_mind, _first_detected_bank, first_pages = sortable[0]
-
-            summary, alerts_df = _validate_result_df(
-                result_preview,
-                bank=effective_bank,
-                source_name=first_name,
-                expected_pages=first_pages,
-            )
-
-            summary_data = _build_summary_data(
-                result_preview,
-                bank=effective_bank,
-                files_count=len(sortable),
-                summary_validation=summary,
-            )
-
-            with tab_prev:
-                _render_summary_panel(summary_data)
-
-                st.download_button(
-                    "⬇️ Descargar Excel (NUMÉRICO, múltiples hojas por cuenta)",
-                    data=buf.getvalue(),
-                    file_name=excel_name,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
+                first_name, _first_fin, _first_mind, _first_detected_bank, first_pages = sortable[0]
+                summary, alerts_df = _validate_result_df(
+                    result_preview,
+                    bank=effective_bank,
+                    source_name=first_name,
+                    expected_pages=first_pages,
                 )
 
-                _render_validation_panel(summary, alerts_df)
+                summary_data = _build_summary_data(
+                    result_preview,
+                    bank=effective_bank,
+                    files_count=len(sortable),
+                    summary_validation=summary,
+                )
 
-                st.subheader(f"Vista previa (hoja: {first_sheet})")
-                st.dataframe(result_preview, use_container_width=True, height=480)
+                with tab_prev:
+                    _render_summary_panel(summary_data)
+
+                    st.download_button(
+                        "⬇️ Descargar Excel (NUMÉRICO, múltiples hojas por cuenta)",
+                        data=buf.getvalue(),
+                        file_name=excel_name,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                    )
+
+                    _render_validation_panel(summary, alerts_df)
+
+                    st.subheader(f"Vista previa (hoja: {first_sheet})")
+                    st.dataframe(result_preview, use_container_width=True, height=480)
 
                 total_rows = sum(len(_append_blocks(account_map[cta])) for cta in account_map.keys())
 
@@ -2526,6 +2523,80 @@ if do_convert:
                     files_names=[name for name, _, _, _, _ in sortable],
                     status="OK",
                     rows_count=total_rows,
+                    output_name=excel_name,
+                )
+
+            else:
+                chunks = []
+
+                for name, fin, _mind, _detected_bank, _pages in sortable:
+                    chunks.append(fin[EXPECTED_COLS])
+
+                    if add_blank:
+                        chunks.append(
+                            pd.DataFrame(
+                                [[pd.NaT, "", "", 0.0, 0.0, 0.0]],
+                                columns=EXPECTED_COLS,
+                            )
+                        )
+
+                result = _append_blocks(chunks)
+
+                buf = io.BytesIO()
+                with pd.ExcelWriter(buf, engine="xlsxwriter", datetime_format="dd/mm/yyyy") as writer:
+                    result.to_excel(writer, index=False, sheet_name="Extractos")
+
+                    wb = writer.book
+                    ws = writer.sheets["Extractos"]
+
+                    if effective_bank == "SUPERVIELLE 2":
+                        ws.set_column("A:A", 18, wb.add_format({"num_format": "dd/mm/yyyy hh:mm"}))
+                    else:
+                        ws.set_column("A:A", 12, wb.add_format({"num_format": "dd/mm/yyyy"}))
+
+                    ws.set_column("B:B", 90)
+                    ws.set_column("C:C", 28)
+                    ws.set_column("D:F", 16, wb.add_format({"num_format": "0.00"}))
+
+                excel_name = f"EXTRACTOS_{effective_bank}.xlsx"
+
+                first_name, _first_fin, _first_mind, _first_detected_bank, first_pages = sortable[0]
+                summary, alerts_df = _validate_result_df(
+                    result,
+                    bank=effective_bank,
+                    source_name=first_name,
+                    expected_pages=first_pages,
+                )
+
+                summary_data = _build_summary_data(
+                    result,
+                    bank=effective_bank,
+                    files_count=len(sortable),
+                    summary_validation=summary,
+                )
+
+                with tab_prev:
+                    _render_summary_panel(summary_data)
+
+                    st.download_button(
+                        "⬇️ Descargar Excel (NUMÉRICO)",
+                        data=buf.getvalue(),
+                        file_name=excel_name,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                    )
+
+                    _render_validation_panel(summary, alerts_df)
+
+                    st.subheader("Vista previa")
+                    st.dataframe(result, use_container_width=True, height=480)
+
+                _add_history_entry(
+                    bank_selected=bank,
+                    effective_bank=effective_bank,
+                    files_names=[name for name, _, _, _, _ in sortable],
+                    status="OK",
+                    rows_count=len(result),
                     output_name=excel_name,
                 )
 
