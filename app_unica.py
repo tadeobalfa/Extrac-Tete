@@ -2486,35 +2486,37 @@ if do_convert:
                 excel_name = f"EXTRACTOS_{effective_bank}.xlsx"
 
 
-                first_name, _first_fin, _first_mind, _first_detected_bank, first_pages = sortable[0]
-                summary, alerts_df = _validate_result_df(
-                    result_preview,
-                    bank=effective_bank,
-                    source_name=first_name,
-                    expected_pages=first_pages,
+            first_name, _first_fin, _first_mind, _first_detected_bank, first_pages = sortable[0]
+
+            summary, alerts_df = _validate_result_df(
+                result_preview,
+                bank=effective_bank,
+                source_name=first_name,
+                expected_pages=first_pages,
+            )
+
+            summary_data = _build_summary_data(
+                result_preview,
+                bank=effective_bank,
+                files_count=len(sortable),
+                summary_validation=summary,
+            )
+
+            with tab_prev:
+                _render_summary_panel(summary_data)
+
+                st.download_button(
+                    "⬇️ Descargar Excel (NUMÉRICO, múltiples hojas por cuenta)",
+                    data=buf.getvalue(),
+                    file_name=excel_name,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
                 )
 
-				summary_data = _build_summary_data(
-					result_preview,
-					bank=effective_bank,
-    				files_count=len(sortable),
-    				summary_validation=summary,
-				)   
+                _render_validation_panel(summary, alerts_df)
 
-                with tab_prev:
-		    		_render_summary_panel(summary_data)
-
-                    st.download_button(
-                        "⬇️ Descargar Excel (NUMÉRICO, múltiples hojas por cuenta)",
-                        data=buf.getvalue(),
-                        file_name=excel_name,
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True,
-                    )
-                    _render_validation_panel(summary, alerts_df)
-                    
-                    st.subheader(f"Vista previa (hoja: {first_sheet})")
-                    st.dataframe(result_preview, use_container_width=True, height=480)
+                st.subheader(f"Vista previa (hoja: {first_sheet})")
+                st.dataframe(result_preview, use_container_width=True, height=480)
 
                 total_rows = sum(len(_append_blocks(account_map[cta])) for cta in account_map.keys())
 
