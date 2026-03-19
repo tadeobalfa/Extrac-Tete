@@ -1945,23 +1945,23 @@ def _render_validation_panel(summary: dict, alerts_df: pd.DataFrame):
 
     if alerts_df is not None and not alerts_df.empty:
         alerts_view = alerts_df.copy()
-        alerts_view["Severidad"] = alerts_view["Severidad"].apply(_severity_badge_html)
 
-        table_html = """
-        <div class="validation-table-wrap">
-          <table class="validation-table">
-            <thead>
-              <tr>
-                <th>Severidad</th>
-                <th>Archivo</th>
-                <th>Fila</th>
-                <th>Tipo</th>
-                <th>Detalle</th>
-              </tr>
-            </thead>
-            <tbody>
-        """
+        def _sev_label(sev: str) -> str:
+            sev_u = str(sev).upper()
+            if sev_u == "CRITICA":
+                return "✖ Crítica"
+            if sev_u == "MEDIA":
+                return "⚠ Media"
+            return "ℹ Inferior"
 
+        alerts_view["Severidad"] = alerts_view["Severidad"].apply(_sev_label)
+
+        st.dataframe(
+            alerts_view,
+            use_container_width=True,
+            height=min(360, 56 + len(alerts_view) * 35),
+        )
+        
         for _, row in alerts_view.iterrows():
             table_html += f"""
               <tr>
