@@ -2300,7 +2300,7 @@ if do_convert:
             )
 
             sortable = []
-            for name, fin, mind, detected_bank in items:
+            for name, fin, mind, detected_bank, pages in items:
                 if pd.isna(mind):
                     y, m = _infer_period_from_filename(name)
                     if y and m:
