@@ -2495,10 +2495,10 @@ if do_convert:
                 )
 
 				summary_data = _build_summary_data(
-    						result_preview,
-    						bank=effective_bank,
-    						files_count=len(sortable),
-    						summary_validation=summary,
+    				result_preview,
+    				bank=effective_bank,
+    				files_count=len(sortable),
+    				summary_validation=summary,
 				)   
 
                 with tab_prev:
