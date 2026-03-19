@@ -1981,9 +1981,6 @@ if do_convert:
                 first_sheet = next(iter(account_map))
                 result_preview = _append_blocks(account_map[first_sheet])
 
-                with tab_prev:
-                    st.subheader(f"Vista previa (hoja: {first_sheet})")
-                    st.dataframe(result_preview, use_container_width=True, height=480)
 
                 buf = io.BytesIO()
                 with pd.ExcelWriter(buf, engine="xlsxwriter", datetime_format="dd/mm/yyyy") as writer:
@@ -2015,7 +2012,7 @@ if do_convert:
                         use_container_width=True,
                     )
                     st.subheader(f"Vista previa (hoja: {first_sheet})")
-                    st.subheader(f"Vista previa (hoja: {first_sheet})")
+                    st.dataframe(result_preview, use_container_width=True, height=480)
 
                 total_rows = sum(len(_append_blocks(account_map[cta])) for cta in account_map.keys())
 
@@ -2044,9 +2041,6 @@ if do_convert:
 
                 result = _append_blocks(chunks)
 
-                with tab_prev:
-                    st.subheader("Vista previa")
-                    st.dataframe(result, use_container_width=True, height=480)
 
                 buf = io.BytesIO()
                 with pd.ExcelWriter(buf, engine="xlsxwriter", datetime_format="dd/mm/yyyy") as writer:
@@ -2075,7 +2069,7 @@ if do_convert:
                         use_container_width=True,
                     )
                     st.subheader("Vista previa")
-                    st.dataframe(result_preview, use_container_width=True, height=480)
+                    st.dataframe(result, use_container_width=True, height=480)
 
                 _add_history_entry(
                     bank_selected=bank,
