@@ -46,6 +46,39 @@ label {
     font-weight: 500;
 }
 
+.summary-inline {
+    display:flex;
+    flex-wrap:wrap;
+    gap:18px;
+    align-items:center;
+    justify-content:space-between;
+    padding:10px 14px;
+    margin-bottom:10px;
+    border:1px solid rgba(255,255,255,.08);
+    background: rgba(255,255,255,.04);
+    border-radius: 12px;
+    font-size:14px;
+    color:#e9dff9;
+}
+
+.summary-inline strong {
+    color:#ffffff;
+}
+
+.summary-inline div {
+    opacity:.95;
+}
+
+.summary-status-ok {
+    color:#7ff0a5;
+    font-weight:700;
+}
+
+.summary-status-review {
+    color:#ffc857;
+    font-weight:700;
+}
+
 .validation-card {
     margin-top: 16px;
     margin-bottom: 18px;
@@ -1962,6 +1995,105 @@ def _render_validation_panel(summary: dict, alerts_df: pd.DataFrame):
             height=min(360, 56 + len(alerts_view) * 35),
         )
 
+def _format_date_display(dt) -> str:
+    if pd.isna(dt):
+        return "-"
+    try:
+        return pd.to_datetime(dt).strftime("%d/%m/%Y")
+    except Exception:
+        return "-"
+
+
+def _format_money_display(x: float) -> str:
+    try:
+        v = float(x or 0.0)
+    except Exception:
+        v = 0.0
+    s = f"{v:,.2f}"
+    s = s.replace(",", "X").replace(".", ",").replace("X", ".")
+    return s
+
+
+def _build_summary_data(
+    df: pd.DataFrame,
+    bank: str,
+    files_count: int,
+    summary_validation: Optional[dict] = None,
+) -> dict:
+    if df is None or df.empty:
+        return {
+            "Banco": bank,
+            "Archivos": files_count,
+            "Movimientos": 0,
+            "Fecha inicial": "-",
+            "Fecha final": "-",
+            "Total Débitos": 0.0,
+            "Total Créditos": 0.0,
+            "Saldo final": 0.0,
+            "Estado": "Revisar",
+        }
+
+    work = df.copy()
+    work["Fecha"] = pd.to_datetime(work["Fecha"], errors="coerce")
+    for c in ["Débito", "Crédito", "Saldo"]:
+        work[c] = work[c].apply(_coerce_number)
+
+    work = work[~work.apply(_is_blank_visual_row, axis=1)].reset_index(drop=True)
+
+    fecha_min = work["Fecha"].min() if not work.empty else pd.NaT
+    fecha_max = work["Fecha"].max() if not work.empty else pd.NaT
+
+    total_deb = float(work["Débito"].sum()) if not work.empty else 0.0
+    total_cred = float(work["Crédito"].sum()) if not work.empty else 0.0
+    saldo_final = float(work.iloc[-1]["Saldo"]) if not work.empty else 0.0
+
+    estado = "OK"
+    if summary_validation and summary_validation.get("estado") != "VERDE":
+        estado = "Revisar"
+
+    return {
+        "Banco": bank,
+        "Archivos": files_count,
+        "Movimientos": int(len(work)),
+        "Fecha inicial": _format_date_display(fecha_min),
+        "Fecha final": _format_date_display(fecha_max),
+        "Total Débitos": total_deb,
+        "Total Créditos": total_cred,
+        "Saldo final": saldo_final,
+        "Estado": estado,
+    }
+
+
+def _render_summary_panel(summary_data: dict):
+    estado = summary_data.get("Estado", "OK")
+
+    estado_html = (
+        '<span class="summary-status-ok">🟢 OK</span>'
+        if estado == "OK"
+        else '<span class="summary-status-review">🟡 Revisar</span>'
+    )
+
+    banco = summary_data.get("Banco", "-")
+    movs = summary_data.get("Movimientos", 0)
+    deb = _format_money_display(summary_data.get("Total Débitos", 0.0))
+    cred = _format_money_display(summary_data.get("Total Créditos", 0.0))
+    saldo = _format_money_display(summary_data.get("Saldo final", 0.0))
+
+    st.markdown(
+        f"""
+        <div class="summary-inline">
+            <div><strong>{banco}</strong></div>
+            <div>Mov: <strong>{movs}</strong></div>
+            <div>Déb: $ {deb}</div>
+            <div>Créd: $ {cred}</div>
+            <div>Saldo: $ {saldo}</div>
+            <div>{estado_html}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def _friendly_error_info(error_text: str):
     e = (error_text or "").lower()
 
@@ -2360,8 +2492,18 @@ if do_convert:
                     bank=effective_bank,
                     source_name=first_name,
                     expected_pages=first_pages,
-                )   
+                )
+
+		summary_data = _build_summary_data(
+    						result_preview,
+    						bank=effective_bank,
+    						files_count=len(sortable),
+    						summary_validation=summary,
+		)   
+
                 with tab_prev:
+		    _render_summary_panel(summary_data)
+
                     st.download_button(
                         "⬇️ Descargar Excel (NUMÉRICO, múltiples hojas por cuenta)",
                         data=buf.getvalue(),
@@ -2426,8 +2568,18 @@ if do_convert:
                     bank=effective_bank,
                     source_name=first_name,
                     expected_pages=first_pages,
-                )                
+                )
+
+		summary_data = _build_summary_data(
+    						result,
+    						bank=effective_bank,
+    						files_count=len(sortable),
+    						summary_validation=summary,
+		)
+                
                 with tab_prev:
+		    _render_summary_panel(summary_data)
+
                     st.download_button(
                         "⬇️ Descargar Excel (NUMÉRICO)",
                         data=buf.getvalue(),
@@ -2493,7 +2645,3 @@ st.markdown("""
   </div>
 </div>
 """, unsafe_allow_html=True)
-
-
-
-
