@@ -2494,15 +2494,15 @@ if do_convert:
                     expected_pages=first_pages,
                 )
 
-		summary_data = _build_summary_data(
+				summary_data = _build_summary_data(
     						result_preview,
     						bank=effective_bank,
     						files_count=len(sortable),
     						summary_validation=summary,
-		)   
+				)   
 
                 with tab_prev:
-		    _render_summary_panel(summary_data)
+		    		_render_summary_panel(summary_data)
 
                     st.download_button(
                         "⬇️ Descargar Excel (NUMÉRICO, múltiples hojas por cuenta)",
@@ -2570,15 +2570,15 @@ if do_convert:
                     expected_pages=first_pages,
                 )
 
-		summary_data = _build_summary_data(
-    						result,
-    						bank=effective_bank,
-    						files_count=len(sortable),
-    						summary_validation=summary,
-		)
+				summary_data = _build_summary_data(
+    				result,
+    				bank=effective_bank,
+    				files_count=len(sortable),
+    				summary_validation=summary,
+				)
                 
                 with tab_prev:
-		    _render_summary_panel(summary_data)
+		    		_render_summary_panel(summary_data)
 
                     st.download_button(
                         "⬇️ Descargar Excel (NUMÉRICO)",
