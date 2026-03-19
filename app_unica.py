@@ -1961,25 +1961,6 @@ def _render_validation_panel(summary: dict, alerts_df: pd.DataFrame):
             use_container_width=True,
             height=min(360, 56 + len(alerts_view) * 35),
         )
-        
-        for _, row in alerts_view.iterrows():
-            table_html += f"""
-              <tr>
-                <td>{row['Severidad']}</td>
-                <td>{row['Archivo']}</td>
-                <td>{row['Fila']}</td>
-                <td>{row['Tipo']}</td>
-                <td>{row['Detalle']}</td>
-              </tr>
-            """
-
-        table_html += """
-            </tbody>
-          </table>
-        </div>
-        """
-
-        st.markdown(table_html, unsafe_allow_html=True)
 
 def _friendly_error_info(error_text: str):
     e = (error_text or "").lower()
