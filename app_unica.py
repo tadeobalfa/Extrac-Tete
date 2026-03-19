@@ -46,6 +46,106 @@ label {
     font-weight: 500;
 }
 
+.validation-card {
+    margin-top: 16px;
+    margin-bottom: 18px;
+    border: 1px solid rgba(255,255,255,.08);
+    background: rgba(255,255,255,.04);
+    border-radius: 18px;
+    overflow: hidden;
+    box-shadow: 0 10px 30px rgba(0,0,0,.28);
+}
+
+.validation-title {
+    font-size: 22px;
+    font-weight: 800;
+    color: #f4eaff;
+    padding: 18px 20px;
+    border-bottom: 1px solid rgba(255,255,255,.08);
+}
+
+.validation-summary {
+    padding: 18px 20px 12px 20px;
+}
+
+.validation-status {
+    font-size: 18px;
+    margin-bottom: 10px;
+    color: #f2eaff;
+}
+
+.validation-bullets {
+    margin: 0;
+    padding-left: 22px;
+    color: #d9c8f8;
+    font-size: 16px;
+    line-height: 1.7;
+}
+
+.status-green {
+    color: #7ff0a5;
+    font-weight: 800;
+}
+
+.status-yellow {
+    color: #ffc857;
+    font-weight: 800;
+}
+
+.validation-table-wrap {
+    border: 1px solid rgba(255,255,255,.08);
+    background: rgba(255,255,255,.03);
+    border-radius: 16px;
+    overflow: hidden;
+    margin-bottom: 22px;
+}
+
+.validation-table {
+    width: 100%;
+    border-collapse: collapse;
+    color: #f2eaff;
+    font-size: 15px;
+}
+
+.validation-table thead th {
+    text-align: left;
+    padding: 14px 16px;
+    background: rgba(255,255,255,.03);
+    border-bottom: 1px solid rgba(255,255,255,.08);
+    font-size: 15px;
+}
+
+.validation-table tbody td {
+    padding: 14px 16px;
+    border-top: 1px solid rgba(255,255,255,.06);
+    vertical-align: top;
+}
+
+.alert-badge {
+    display: inline-block;
+    padding: 6px 12px;
+    border-radius: 10px;
+    font-weight: 800;
+    font-size: 14px;
+    line-height: 1;
+    white-space: nowrap;
+}
+
+.alert-critical {
+    background: linear-gradient(90deg,#ff4d5a,#ff6a3d);
+    color: white;
+}
+
+.alert-medium {
+    background: linear-gradient(90deg,#ffb020,#ffcf4d);
+    color: #342100;
+}
+
+.alert-info {
+    background: linear-gradient(90deg,#f8df6b,#fff08b);
+    color: #322600;
+}
+
 .stCheckbox label,
 .stCheckbox p,
 .stSelectbox label,
@@ -1613,6 +1713,274 @@ def _render_progress(box, current: int, total: int, label: str, sublabel: str = 
         unsafe_allow_html=True,
     )
 
+def _count_pdf_pages(raw_bytes: bytes) -> int:
+    try:
+        with pdfplumber.open(io.BytesIO(raw_bytes)) as pdf:
+            return len(pdf.pages)
+    except Exception:
+        return 0
+
+
+def _is_blank_visual_row(row: pd.Series) -> bool:
+    try:
+        fecha_na = pd.isna(row.get("Fecha"))
+        desc_blank = str(row.get("Descripción", "")).strip() == ""
+        deb = float(row.get("Débito", 0.0) or 0.0)
+        cred = float(row.get("Crédito", 0.0) or 0.0)
+        saldo = float(row.get("Saldo", 0.0) or 0.0)
+        return fecha_na and desc_blank and deb == 0.0 and cred == 0.0 and saldo == 0.0
+    except Exception:
+        return False
+
+
+def _severity_rank(sev: str) -> int:
+    order = {"CRITICA": 0, "MEDIA": 1, "INFORMATIVA": 2}
+    return order.get(str(sev).upper(), 9)
+
+
+def _severity_badge_html(sev: str) -> str:
+    sev_u = str(sev).upper()
+    if sev_u == "CRITICA":
+        return '<span class="alert-badge alert-critical">✖ Crítica</span>'
+    if sev_u == "MEDIA":
+        return '<span class="alert-badge alert-medium">⚠ Media</span>'
+    return '<span class="alert-badge alert-info">ℹ Inferior</span>'
+
+
+def _validate_result_df(
+    df: pd.DataFrame,
+    bank: str,
+    source_name: str = "",
+    expected_pages: Optional[int] = None,
+) -> tuple[dict, pd.DataFrame]:
+    if df is None or df.empty:
+        summary = {
+            "estado": "AMARILLO",
+            "criticas": 1,
+            "medias": 0,
+            "informativas": 0,
+            "movimientos": 0,
+        }
+        alerts = pd.DataFrame([{
+            "Severidad": "CRITICA",
+            "Archivo": source_name or "-",
+            "Fila": "-",
+            "Tipo": "Sin movimientos",
+            "Detalle": "No se detectaron movimientos válidos en la salida.",
+        }])
+        return summary, alerts
+
+    work = df.copy().reset_index(drop=True)
+
+    mask_valid = ~work.apply(_is_blank_visual_row, axis=1)
+    work = work[mask_valid].reset_index(drop=True)
+
+    alerts: List[dict] = []
+
+    if work.empty:
+        summary = {
+            "estado": "AMARILLO",
+            "criticas": 1,
+            "medias": 0,
+            "informativas": 0,
+            "movimientos": 0,
+        }
+        alerts = pd.DataFrame([{
+            "Severidad": "CRITICA",
+            "Archivo": source_name or "-",
+            "Fila": "-",
+            "Tipo": "Sin movimientos",
+            "Detalle": "La salida quedó vacía luego de remover filas visuales en blanco.",
+        }])
+        return summary, alerts
+
+    work["Fecha"] = pd.to_datetime(work["Fecha"], errors="coerce")
+    for c in ["Débito", "Crédito", "Saldo"]:
+        work[c] = work[c].apply(_coerce_number)
+
+    # 1) fecha + descripción pero sin importe
+    mask_no_amount = (
+        work["Fecha"].notna()
+        & work["Descripción"].astype(str).str.strip().ne("")
+        & (work["Débito"].abs() == 0)
+        & (work["Crédito"].abs() == 0)
+    )
+    for idx in work.index[mask_no_amount]:
+        alerts.append({
+            "Severidad": "CRITICA",
+            "Archivo": source_name or "-",
+            "Fila": int(idx) + 2,
+            "Tipo": "Movimiento sin importe",
+            "Detalle": "La fila tiene fecha y descripción, pero Débito y Crédito están en cero.",
+        })
+
+    # 2) débito y crédito simultáneos
+    mask_both = (work["Débito"].abs() > 0) & (work["Crédito"].abs() > 0)
+    for idx in work.index[mask_both]:
+        alerts.append({
+            "Severidad": "CRITICA",
+            "Archivo": source_name or "-",
+            "Fila": int(idx) + 2,
+            "Tipo": "Débito y crédito simultáneos",
+            "Detalle": "La fila tiene importe en ambas columnas, lo cual es inusual para un extracto.",
+        })
+
+    # 3) descripción vacía
+    mask_desc_blank = (
+        work["Fecha"].notna()
+        & ((work["Débito"].abs() > 0) | (work["Crédito"].abs() > 0))
+        & work["Descripción"].astype(str).str.strip().eq("")
+    )
+    for idx in work.index[mask_desc_blank]:
+        alerts.append({
+            "Severidad": "MEDIA",
+            "Archivo": source_name or "-",
+            "Fila": int(idx) + 2,
+            "Tipo": "Descripción vacía",
+            "Detalle": "Movimiento con importe pero sin texto descriptivo.",
+        })
+
+    # 4) saldo corrido inconsistente
+    tol = 0.01
+    for i in range(1, len(work)):
+        prev_saldo = float(work.loc[i - 1, "Saldo"])
+        deb = float(work.loc[i, "Débito"])
+        cred = float(work.loc[i, "Crédito"])
+        saldo_real = float(work.loc[i, "Saldo"])
+        esperado = round(prev_saldo - deb + cred, 2)
+        diff = round(saldo_real - esperado, 2)
+
+        if abs(diff) > tol:
+            alerts.append({
+                "Severidad": "CRITICA",
+                "Archivo": source_name or "-",
+                "Fila": int(i) + 2,
+                "Tipo": "Saldo inconsistente",
+                "Detalle": f"Saldo esperado {esperado:,.2f} y se obtuvo {saldo_real:,.2f}.",
+            })
+
+    # 5) importe sospechoso igual al saldo
+    for i in range(len(work)):
+        deb = abs(float(work.loc[i, "Débito"]))
+        cred = abs(float(work.loc[i, "Crédito"]))
+        saldo = abs(float(work.loc[i, "Saldo"]))
+        imp = max(deb, cred)
+
+        if imp > 0 and saldo > 0 and abs(imp - saldo) <= 0.01:
+            alerts.append({
+                "Severidad": "MEDIA",
+                "Archivo": source_name or "-",
+                "Fila": int(i) + 2,
+                "Tipo": "Importe sospechoso",
+                "Detalle": "El importe coincide exactamente con el saldo; conviene revisar la fila.",
+            })
+
+    # 6) pocos movimientos para muchas páginas
+    if expected_pages is not None and expected_pages >= 3 and len(work) < expected_pages * 3:
+        alerts.append({
+            "Severidad": "INFORMATIVA",
+            "Archivo": source_name or "-",
+            "Fila": "-",
+            "Tipo": "Pocos movimientos detectados",
+            "Detalle": f"Se detectaron {len(work)} movimientos para {expected_pages} página(s).",
+        })
+
+    alerts_df = pd.DataFrame(alerts, columns=["Severidad", "Archivo", "Fila", "Tipo", "Detalle"])
+
+    crit = 0 if alerts_df.empty else int((alerts_df["Severidad"] == "CRITICA").sum())
+    med = 0 if alerts_df.empty else int((alerts_df["Severidad"] == "MEDIA").sum())
+    inf = 0 if alerts_df.empty else int((alerts_df["Severidad"] == "INFORMATIVA").sum())
+
+    if crit > 0:
+        estado = "AMARILLO"
+    elif med > 0 or inf > 0:
+        estado = "AMARILLO"
+    else:
+        estado = "VERDE"
+
+    summary = {
+        "estado": estado,
+        "criticas": crit,
+        "medias": med,
+        "informativas": inf,
+        "movimientos": int(len(work)),
+    }
+
+    if not alerts_df.empty:
+        alerts_df = alerts_df.sort_values(
+            by=["Severidad", "Fila"],
+            key=lambda s: s.map(_severity_rank) if s.name == "Severidad" else s,
+        ).reset_index(drop=True)
+
+    return summary, alerts_df
+
+
+def _render_validation_panel(summary: dict, alerts_df: pd.DataFrame):
+    estado = summary.get("estado", "VERDE")
+    crit = summary.get("criticas", 0)
+    med = summary.get("medias", 0)
+    inf = summary.get("informativas", 0)
+
+    if estado == "VERDE":
+        estado_html = '<span class="status-green">🟢 Verde — Sin observaciones importantes</span>'
+    else:
+        estado_html = '<span class="status-yellow">🟡 Amarillo — Revisar</span>'
+
+    st.markdown(
+        f"""
+        <div class="validation-card">
+            <div class="validation-title">⚠️ Control automático del resultado</div>
+            <div class="validation-summary">
+                <div class="validation-status">Estado general: {estado_html}</div>
+                <ul class="validation-bullets">
+                    <li>{crit} alertas críticas</li>
+                    <li>{med} alertas medias</li>
+                    <li>{inf} advertencia informativa</li>
+                </ul>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if alerts_df is not None and not alerts_df.empty:
+        alerts_view = alerts_df.copy()
+        alerts_view["Severidad"] = alerts_view["Severidad"].apply(_severity_badge_html)
+
+        table_html = """
+        <div class="validation-table-wrap">
+          <table class="validation-table">
+            <thead>
+              <tr>
+                <th>Severidad</th>
+                <th>Archivo</th>
+                <th>Fila</th>
+                <th>Tipo</th>
+                <th>Detalle</th>
+              </tr>
+            </thead>
+            <tbody>
+        """
+
+        for _, row in alerts_view.iterrows():
+            table_html += f"""
+              <tr>
+                <td>{row['Severidad']}</td>
+                <td>{row['Archivo']}</td>
+                <td>{row['Fila']}</td>
+                <td>{row['Tipo']}</td>
+                <td>{row['Detalle']}</td>
+              </tr>
+            """
+
+        table_html += """
+            </tbody>
+          </table>
+        </div>
+        """
+
+        st.markdown(table_html, unsafe_allow_html=True)
+
 def _friendly_error_info(error_text: str):
     e = (error_text or "").lower()
 
@@ -1792,8 +2160,9 @@ if do_convert:
                 if detected_bank not in {"SUPERVIELLE 2", "NACION 2"}:
                     fin = _sort_rows_by_fecha(fin)
 
+            pages = _count_pdf_pages(data)
             _log(f"✓ {name}: {detected_bank} | {len(fin)} filas en {time.time() - t0:.1f}s")
-            return fin, detected_bank
+            return fin, detected_bank, pages
             
         items = []
         errors = []
@@ -1817,9 +2186,9 @@ if do_convert:
                     else:
                         timeout_sec = timeouts.get(bank, 300 if not long_mode else 600)
 
-                    fin, detected_bank = process_one(name, data, timeout_sec)
+                    fin, detected_bank, pages = process_one(name, data, timeout_sec)
                     mind = _df_min_date(fin)
-                    items.append((name, fin, mind, detected_bank))
+                    items.append((name, fin, mind, detected_bank, pages))
 
                     _render_progress(
                         progress_box,
@@ -1899,9 +2268,9 @@ if do_convert:
             if not (atomic_mode and failed):
                 for name, _data, _ in inputs:
                     if name in tmp:
-                        fin, detected_bank = tmp[name]
+                        fin, detected_bank, pages = tmp[name]
                         mind = _df_min_date(fin)
-                        items.append((name, fin, mind, detected_bank))
+                        items.append((name, fin, mind, detected_bank, pages))
 
         if errors:
             _show_main_error(errors)
@@ -1936,17 +2305,17 @@ if do_convert:
                     y, m = _infer_period_from_filename(name)
                     if y and m:
                         mind = pd.Timestamp(year=y, month=m, day=1)
-                sortable.append((name, fin, mind, detected_bank))
+                sortable.append((name, fin, mind, detected_bank, pages))
 
             def _key(t):
-                name, fin, mind, detected_bank = t
+                name, fin, mind, detected_bank, pages = t
                 has = 0 if (isinstance(mind, pd.Timestamp) and not pd.isna(mind)) else 1
                 return (has, mind if not pd.isna(mind) else pd.Timestamp.max, name.lower())
 
             sortable.sort(key=_key)
 
             if bank == "AUTO":
-                detected_banks = sorted(set(db for _, _, _, db in sortable))
+                detected_banks = sorted(set(db for _, _, _, db, _ in sortable))
                 if len(detected_banks) > 1:
                     st.error(
                         "Se detectaron múltiples bancos en la misma carga: "
@@ -1960,7 +2329,7 @@ if do_convert:
             if effective_bank in MULTISHEET_BANKS:
                 account_map: Dict[str, List[pd.DataFrame]] = {}
 
-                for name, fin, _mind, _detected_bank in sortable:
+                for name, fin, _mind, _detected_bank, _pages in sortable:
                     if "Cuenta" in fin.columns:
                         for cta, chunk in fin.groupby(fin["Cuenta"].fillna("GENERAL"), sort=False):
                             chunk = chunk.drop(columns=[c for c in ["Cuenta"] if c in chunk.columns])
@@ -2003,6 +2372,14 @@ if do_convert:
 
                 excel_name = f"EXTRACTOS_{effective_bank}.xlsx"
 
+
+                first_name, _first_fin, _first_mind, _first_detected_bank, first_pages = sortable[0]
+                summary, alerts_df = _validate_result_df(
+                    result_preview,
+                    bank=effective_bank,
+                    source_name=first_name,
+                    expected_pages=first_pages,
+                )   
                 with tab_prev:
                     st.download_button(
                         "⬇️ Descargar Excel (NUMÉRICO, múltiples hojas por cuenta)",
@@ -2011,6 +2388,8 @@ if do_convert:
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         use_container_width=True,
                     )
+                    _render_validation_panel(summary, alerts_df)
+                    
                     st.subheader(f"Vista previa (hoja: {first_sheet})")
                     st.dataframe(result_preview, use_container_width=True, height=480)
 
@@ -2019,7 +2398,7 @@ if do_convert:
                 _add_history_entry(
                     bank_selected=bank,
                     effective_bank=effective_bank,
-                    files_names=[name for name, _, _, _ in sortable],
+                    files_names=[name for name, _, _, _, _ in sortable],
                     status="OK",
                     rows_count=total_rows,
                     output_name=excel_name,
@@ -2028,7 +2407,7 @@ if do_convert:
             else:
                 chunks = []
 
-                for name, fin, _mind, _detected_bank in sortable:
+                for name, fin, _mind, _detected_bank, _pages in sortable:
                     chunks.append(fin[EXPECTED_COLS])
 
                     if add_blank:
@@ -2060,6 +2439,13 @@ if do_convert:
 
                 excel_name = f"EXTRACTOS_{effective_bank}.xlsx"
 
+                first_name, _first_fin, _first_mind, _first_detected_bank, first_pages = sortable[0]
+                summary, alerts_df = _validate_result_df(
+                    result,
+                    bank=effective_bank,
+                    source_name=first_name,
+                    expected_pages=first_pages,
+                )                
                 with tab_prev:
                     st.download_button(
                         "⬇️ Descargar Excel (NUMÉRICO)",
@@ -2068,13 +2454,15 @@ if do_convert:
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         use_container_width=True,
                     )
+                    _render_validation_panel(summary, alerts_df)
+                    
                     st.subheader("Vista previa")
                     st.dataframe(result, use_container_width=True, height=480)
 
                 _add_history_entry(
                     bank_selected=bank,
                     effective_bank=effective_bank,
-                    files_names=[name for name, _, _, _ in sortable],
+                    files_names=[name for name, _, _, _, _ in sortable],
                     status="OK",
                     rows_count=len(result),
                     output_name=excel_name,
