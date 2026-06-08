@@ -187,15 +187,15 @@ def parse_pdf(file_bytes: bytes) -> pd.DataFrame:
                 # Líneas de detalle posteriores con montos de referencia,
                 # por ejemplo: Responsable... / 1,30% sobre $10.400.000,00
                 # No son movimientos nuevos.
+                # IMPORTANTE: no incluir "%" como condición general,
+                # porque movimientos reales como "Imp ley 25413 deb 0,075%"
+                # también tienen porcentaje.
                 if (
                     not has_date
                     and pending_date is None
                     and last_record_open
                     and records
-                    and (
-                        "%" in line
-                        or re.match(r"^(Responsable:|De |Por |Del )", line, re.IGNORECASE)
-                    )
+                    and re.match(r"^(Responsable:|De |Por |Del )", line, re.IGNORECASE)
                 ):
                     detail = clean_text(line)
                     if detail:
