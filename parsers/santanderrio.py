@@ -1,13 +1,16 @@
 # parsers/santanderrio.py
 import io
 import re
-import pdfplumber
+
 import pandas as pd
+import pdfplumber
+
 
 DATE_START = re.compile(r"^\d{2}/\d{2}/\d{2}")
 MONEY_RE = re.compile(r"[−-]?\$?\s?\d{1,3}(?:\.\d{3})*,\d{2}-?")
 SALDO_INICIAL_RE = re.compile(r"saldo\s+inicial", re.IGNORECASE)
 STOP_RE = re.compile(r"^\s*Saldo total(?! en cuentas)", re.IGNORECASE)
+PAGE_FOOTER_RE = re.compile(r"^\s*\d+\s*-\s*\d+\s*$")
 
 EXCLUDE_TOKENS = (
     "Cuenta Corriente N°",
@@ -19,8 +22,6 @@ EXCLUDE_TOKENS = (
     "Banco Santander Argentina",
     "Salvo error u omisión",
 )
-
-PAGE_FOOTER_RE = re.compile(r"^\s*\d+\s*-\s*\d+\s*$")
 
 
 def is_header_summary(line: str) -> bool:
@@ -36,10 +37,7 @@ def clean_text(line: str) -> str:
     if DATE_START.match(t):
         t = t[8:].strip()
 
-    # quita comprobante/código inicial
     t = re.sub(r"^\d{3,}\s+", "", t)
-
-    # limpia restos sueltos
     t = t.replace("$", " ")
     t = re.sub(r"\s{2,}", " ", t)
 
@@ -106,11 +104,11 @@ def parse_pdf(file_bytes: bytes) -> pd.DataFrame:
 
     pending_date = None
     pending_desc_parts = []
+    last_record_open = False
 
     with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-        # IMPORTANTE:
-        # No saltar la primera página, porque algunos Santander traen
-        # el Saldo Inicial y movimientos ya en página 1.
+        # No saltar la primera página:
+        # en algunos Santander el Saldo Inicial y los movimientos arrancan en página 1.
         pages = pdf.pages
 
         for page in pages:
@@ -125,11 +123,15 @@ def parse_pdf(file_bytes: bytes) -> pd.DataFrame:
                 if is_header_summary(line):
                     continue
 
+                # IMPORTANTE:
+                # "Saldo total al..." aparece arriba del resumen antes de Movimientos.
+                # Solo debe cortar cuando ya empezó la lectura real.
                 if STOP_RE.match(line):
-                    stopped = True
-                    break
+                    if started:
+                        stopped = True
+                        break
+                    continue
 
-                # Arranque por Saldo Inicial
                 if SALDO_INICIAL_RE.search(line):
                     nums = MONEY_RE.findall(line)
                     if nums:
@@ -141,12 +143,10 @@ def parse_pdf(file_bytes: bytes) -> pd.DataFrame:
 
                     pending_date = None
                     pending_desc_parts = []
+                    last_record_open = False
                     continue
 
-                # Arranque alternativo por sección Movimientos
                 if not started:
-                    if line.strip().lower() == "movimientos":
-                        started = True
                     continue
 
                 nums = MONEY_RE.findall(line)
@@ -155,51 +155,55 @@ def parse_pdf(file_bytes: bytes) -> pd.DataFrame:
                 if has_date:
                     current_date = line[:8]
 
-                # Si la línea tiene fecha pero no importe, probablemente
-                # empieza un movimiento multilínea.
                 if has_date and not nums:
                     pending_date = current_date
                     desc = clean_text(line)
-
-                    if desc:
-                        pending_desc_parts = [desc]
-                    else:
-                        pending_desc_parts = []
-
+                    pending_desc_parts = [desc] if desc else []
+                    last_record_open = False
                     continue
 
-                # Línea de detalle sin importes: se suma al movimiento abierto.
                 if not nums:
                     detail = clean_text(line)
 
                     if detail:
                         if pending_desc_parts:
                             pending_desc_parts.append(detail)
+                        elif last_record_open and records:
+                            records[-1][1] = records[-1][1] + " / " + detail
                         else:
                             pending_desc_parts = [detail]
                             pending_date = current_date
 
                     continue
 
-                # Si hay importes, se arma/cierra el movimiento.
-                saldo = to_number(nums[-1])
+                # Líneas de detalle posteriores con montos de referencia,
+                # por ejemplo: Responsable... / 1,30% sobre $10.400.000,00
+                # No son movimientos nuevos.
+                if (
+                    not has_date
+                    and pending_date is None
+                    and last_record_open
+                    and records
+                    and (
+                        "%" in line
+                        or re.match(r"^(Responsable:|De |Por |Del )", line, re.IGNORECASE)
+                    )
+                ):
+                    detail = clean_text(line)
+                    if detail:
+                        records[-1][1] = records[-1][1] + " / " + detail
+                    continue
 
+                saldo = to_number(nums[-1])
                 desc_line = clean_text(line)
 
                 if has_date:
                     mov_date = current_date
-
-                    # Movimiento completo en una línea.
-                    if desc_line:
-                        desc_parts = [desc_line]
-                    else:
-                        desc_parts = pending_desc_parts[:]
-
+                    desc_parts = [desc_line] if desc_line else pending_desc_parts[:]
                 else:
-                    # Importe en línea separada: pertenece al movimiento pendiente.
                     mov_date = pending_date or current_date
-
                     desc_parts = pending_desc_parts[:]
+
                     if desc_line:
                         desc_parts.append(desc_line)
 
@@ -212,7 +216,6 @@ def parse_pdf(file_bytes: bytes) -> pd.DataFrame:
                 if not desc_final:
                     desc_final = "(sin descripción)"
 
-                # Evitar tomar Saldo Inicial como movimiento.
                 if not SALDO_INICIAL_RE.search(desc_final):
                     prev_saldo = _append_record(
                         records=records,
@@ -221,6 +224,7 @@ def parse_pdf(file_bytes: bytes) -> pd.DataFrame:
                         saldo=saldo,
                         prev_saldo=prev_saldo,
                     )
+                    last_record_open = True
 
                 pending_date = None
                 pending_desc_parts = []
