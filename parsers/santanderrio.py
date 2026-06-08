@@ -166,18 +166,21 @@ def parse_pdf(file_bytes: bytes) -> pd.DataFrame:
                     detail = clean_text(line)
 
                     if detail:
-                        # Si ya se cerró un movimiento y aparece una línea sin importes,
-                        # esa línea pertenece como segunda línea descriptiva del movimiento anterior.
-                        if last_record_open and records and not has_date:
+                        # CASO SANTANDER:
+                        # Si viene una línea sin fecha y sin importes después de un movimiento,
+                        # es segunda línea descriptiva del movimiento anterior.
+                        # Ej:
+                        # Credito transf online banking emp
+                        # De punto di sauce sa / factura - fac / 30711732272
+                        if records and not has_date:
                             records[-1][1] = records[-1][1] + " / " + detail
+                            last_record_open = True
                             continue
                             
-                        # Si todavía no se cerró movimiento, se acumula como descripción pendiente.
-                        if pending_desc_parts:
-                            pending_desc_parts.append(detail)
-                        else:
-                            pending_desc_parts = [detail]
-                            pending_date = current_date
+                        # Si tiene fecha pero no importe, empieza un movimiento pendiente.
+                        pending_desc_parts = [detail]
+                        pending_date = current_date
+                        last_record_open = False
 
                     continue
 
