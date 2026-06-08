@@ -166,10 +166,15 @@ def parse_pdf(file_bytes: bytes) -> pd.DataFrame:
                     detail = clean_text(line)
 
                     if detail:
+                        # Si ya se cerró un movimiento y aparece una línea sin importes,
+                        # esa línea pertenece como segunda línea descriptiva del movimiento anterior.
+                        if last_record_open and records and not has_date:
+                            records[-1][1] = records[-1][1] + " / " + detail
+                            continue
+                            
+                        # Si todavía no se cerró movimiento, se acumula como descripción pendiente.
                         if pending_desc_parts:
                             pending_desc_parts.append(detail)
-                        elif last_record_open and records:
-                            records[-1][1] = records[-1][1] + " / " + detail
                         else:
                             pending_desc_parts = [detail]
                             pending_date = current_date
