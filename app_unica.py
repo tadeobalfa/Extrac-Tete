@@ -851,6 +851,7 @@ def _apply_classification(df: pd.DataFrame, bank: str) -> pd.DataFrame:
 
     mask_visual = (
         df["Descripción"].astype(str).str.startswith("===")
+        | df["Descripción"].astype(str).str.startswith("Sin movimientos en el período")
         | (
             df["Fecha"].isna()
             & df["Descripción"].astype(str).str.strip().eq("")
@@ -1086,6 +1087,13 @@ def detect_bank(raw_bytes: bytes) -> Optional[str]:
 
     if not txt.strip():
         return None
+
+    # Santander primero, por la leyenda legal de la carátula: si el cliente
+    # tiene transferencias "... / mercado pago / ..." en los movimientos, la
+    # regla de MERCADO PAGO de abajo lo detectaba mal.
+    first_page = _extract_text_for_detection(raw_bytes, max_pages=1)
+    if "BANCO SANTANDER ARGENTINA S.A." in first_page:
+        return "SANTANDER RIO"
 
     if "BRUBANK" in txt and "MI CUENTA" in txt and "MOVIMIENTOS" in txt:
         return "BRUBANK"
@@ -1622,7 +1630,7 @@ FIXES: Dict[str, Callable[[pd.DataFrame], pd.DataFrame]] = {
     "BRUBANK": fix_brubank,
 }
 
-MULTISHEET_BANKS = {"SUPERVIELLE", "BBVA", "PATAGONIA", "BRUBANK"}
+MULTISHEET_BANKS = {"SUPERVIELLE", "BBVA", "PATAGONIA", "BRUBANK", "SANTANDER RIO"}
 
 # ===== UI principal =====
 card = st.container()
@@ -2460,12 +2468,19 @@ if do_convert:
                         for cta in list(account_map.keys()):
                             account_map[cta].append(blank)
 
-                first_sheet = next(iter(account_map))
+                # Santander: primero las cuentas en pesos, después las de dólares
+                # (y la vista previa muestra la cuenta en pesos)
+                if effective_bank == "SANTANDER RIO":
+                    sheet_order = sorted(account_map.keys(), key=lambda c: ("DOLARES" in c.upper(), c))
+                    first_sheet = sheet_order[0]
+                else:
+                    sheet_order = sorted(account_map.keys())
+                    first_sheet = next(iter(account_map))
                 result_preview = _append_blocks(account_map[first_sheet])
 
                 buf = io.BytesIO()
                 with pd.ExcelWriter(buf, engine="xlsxwriter", datetime_format="dd/mm/yyyy") as writer:
-                    for cta in sorted(account_map.keys()):
+                    for cta in sheet_order:
                         df_sheet = _append_blocks(account_map[cta])
                         sheet_name = str(cta)[:31]
                         df_sheet.to_excel(writer, index=False, sheet_name=sheet_name)
