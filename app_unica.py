@@ -2449,8 +2449,16 @@ if do_convert:
 
             if effective_bank in MULTISHEET_BANKS:
                 account_map: Dict[str, List[pd.DataFrame]] = {}
+                empty_files: List[str] = []
 
                 for name, fin, _mind, _detected_bank, _pages in sortable:
+                    # Un PDF sin movimientos leídos no debe crear una hoja
+                    # "GENERAL" vacía: se avisa en pantalla y se saltea.
+                    if fin is None or fin.empty:
+                        empty_files.append(name)
+                        _log(f"⚠ {name}: no se encontraron movimientos")
+                        continue
+
                     if "Cuenta" in fin.columns:
                         for cta, chunk in fin.groupby(fin["Cuenta"].fillna("GENERAL"), sort=False):
                             chunk = chunk.drop(columns=[c for c in ["Cuenta"] if c in chunk.columns])
@@ -2467,6 +2475,13 @@ if do_convert:
                         )
                         for cta in list(account_map.keys()):
                             account_map[cta].append(blank)
+
+                if not account_map:
+                    st.error(
+                        "No se encontraron movimientos en ninguno de los PDFs cargados: "
+                        + ", ".join(empty_files)
+                    )
+                    st.stop()
 
                 # Santander: primero las cuentas en pesos, después las de dólares
                 # (y la vista previa muestra la cuenta en pesos)
@@ -2515,6 +2530,14 @@ if do_convert:
                 )
 
                 with tab_prev:
+                    if empty_files:
+                        st.warning(
+                            "No se encontraron movimientos en: "
+                            + ", ".join(empty_files)
+                            + ". Revisá que sean resúmenes del banco elegido; "
+                            "si lo son, mandá el PDF para ajustar el lector."
+                        )
+
                     _render_summary_panel(summary_data)
 
                     st.download_button(
