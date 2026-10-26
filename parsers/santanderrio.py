@@ -24,14 +24,42 @@ DETAIL_LINE_RE = re.compile(
 )
 
 
+# Encabezado de cuenta, se repite en cada página:
+#   "Cuenta Corriente Nº 205-009387/9 CBU: 0720205820000000938790"
+#   "Cuenta Corriente especial U$S Nº 205-020527/6 CBU: ..."
+ACCOUNT_HEADER_RE = re.compile(
+    r"^(?P<tipo>.+?)\s+N\s*[º°o]\.?\s*(?P<num>[\d\-/]+)\s+CBU",
+    re.IGNORECASE,
+)
+SECTION_PESOS_RE = re.compile(r"^\s*Movimientos en pesos", re.IGNORECASE)
+SECTION_USD_RE = re.compile(r"^\s*Movimientos en d[oó]lares", re.IGNORECASE)
+# A partir de acá ya no hay movimientos (resumen impositivo / leyendas)
+END_RE = re.compile(r"^\s*Detalle impositivo", re.IGNORECASE)
+NO_MOVS_RE = re.compile(r"No ten[eé]s movimientos", re.IGNORECASE)
+
+
+def account_label(tipo: str, numero: str, usd: bool) -> str:
+    """
+    Nombre de la hoja para cada cuenta: tipo + moneda + últimos 3 dígitos.
+    Ej: "Cta Cte PESOS 879", "Cta Cte Esp DOLARES 276" (máx. 31 caracteres).
+    """
+    t = re.sub(r"\s+", " ", tipo).strip()
+    usd = usd or bool(re.search(r"U\$S|USD|D[OÓ]LAR", t, re.IGNORECASE))
+    t = re.sub(r"\b(U\$S|USD|en d[oó]lares|en pesos|\$)", " ", t, flags=re.IGNORECASE)
+    t = re.sub(r"(?i)cuenta corriente", "Cta Cte", t)
+    t = re.sub(r"(?i)caja de ahorros?", "Caja Ahorro", t)
+    t = re.sub(r"(?i)\bespecial\b", "Esp", t)
+    t = re.sub(r"\s+", " ", t).strip() or "Cuenta"
+    digits = re.sub(r"\D", "", numero)
+    label = f"{t} {'DOLARES' if usd else 'PESOS'} {digits[-3:]}".strip()
+    return label[:31]
+
+
 def money_in(line: str):
     """Montos de la línea, ignorando porcentajes."""
     return MONEY_RE.findall(PERCENT_RE.sub(" ", line))
 
 EXCLUDE_TOKENS = (
-    "Cuenta Corriente N°",
-    "Cuenta Corriente Nº",
-    "CBU:",
     "Acuerdo:",
     "Vencimiento:",
     "Fecha Comprobante Movimiento",
@@ -96,7 +124,7 @@ def to_number(s: str) -> float:
     return -v if neg else v
 
 
-def _append_record(records, fecha, desc, saldo, prev_saldo):
+def _append_record(records, fecha, desc, saldo, prev_saldo, cuenta=""):
     if not fecha or not desc:
         return prev_saldo
 
@@ -112,6 +140,7 @@ def _append_record(records, fecha, desc, saldo, prev_saldo):
         round(debito, 2),
         round(credito, 2),
         round(saldo, 2),
+        cuenta,
     ])
 
     return saldo
@@ -129,6 +158,23 @@ def parse_pdf(file_bytes: bytes) -> pd.DataFrame:
     pending_desc_parts = []
     last_record_open = False
 
+    # Multi-cuenta: un resumen puede traer, p.ej., una cuenta en pesos y
+    # otra en dólares. Cada movimiento queda etiquetado con su cuenta y la
+    # app arma una hoja del Excel por cuenta.
+    section_usd = False
+    current_account = ""
+    acct_start = 0                 # índice en records donde arrancó la cuenta actual
+    acct_info = {}                 # cuenta -> (fecha saldo inicial, saldo inicial)
+    account_order = []
+
+    def _open_account(label):
+        nonlocal current_account, acct_start
+        if label != current_account:
+            current_account = label
+            acct_start = len(records)
+        if label not in account_order:
+            account_order.append(label)
+
     with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
         # No saltar la primera página:
         # en algunos Santander el Saldo Inicial y los movimientos arrancan en página 1.
@@ -143,16 +189,34 @@ def parse_pdf(file_bytes: bytes) -> pd.DataFrame:
                 if not line:
                     continue
 
-                if is_header_summary(line):
+                if END_RE.match(line):
+                    stopped = True
+                    break
+
+                if SECTION_PESOS_RE.match(line):
+                    section_usd = False
+                    continue
+                if SECTION_USD_RE.match(line):
+                    section_usd = True
                     continue
 
-                # IMPORTANTE:
-                # "Saldo total al..." aparece arriba del resumen antes de Movimientos.
-                # Solo debe cortar cuando ya empezó la lectura real.
+                m_acc = ACCOUNT_HEADER_RE.match(line)
+                if m_acc:
+                    # Se repite al inicio de cada página: si es la misma cuenta, sigue.
+                    _open_account(account_label(m_acc.group("tipo"), m_acc.group("num"), section_usd))
+                    continue
+
+                if is_header_summary(line) or NO_MOVS_RE.search(line):
+                    continue
+
+                # "Saldo total" cierra la cuenta actual (puede venir otra después).
+                # El "Saldo total en cuentas al..." de la carátula se ignora.
                 if STOP_RE.match(line):
-                    if started:
-                        stopped = True
-                        break
+                    started = False
+                    prev_saldo = None
+                    pending_date = None
+                    pending_desc_parts = []
+                    last_record_open = False
                     continue
 
                 if SALDO_INICIAL_RE.search(line):
@@ -163,6 +227,11 @@ def parse_pdf(file_bytes: bytes) -> pd.DataFrame:
 
                         if DATE_START.match(line):
                             current_date = line[:8]
+
+                        if not current_account:
+                            _open_account(account_label("Cuenta", "", section_usd))
+                        acct_start = len(records)
+                        acct_info.setdefault(current_account, (current_date, prev_saldo))
 
                     pending_date = None
                     pending_desc_parts = []
@@ -179,7 +248,7 @@ def parse_pdf(file_bytes: bytes) -> pd.DataFrame:
                 if DETAIL_LINE_RE.match(line):
                     # Se conserva la base ("sobre $200.730,96") como referencia
                     detail = re.sub(r"\s{2,}", " ", line[8:] if DATE_START.match(line) else line).strip()
-                    if records and detail:
+                    if len(records) > acct_start and detail:
                         records[-1][1] = records[-1][1] + " / " + detail
                     pending_date = None
                     pending_desc_parts = []
@@ -209,7 +278,7 @@ def parse_pdf(file_bytes: bytes) -> pd.DataFrame:
                         # Ej:
                         # Credito transf online banking emp
                         # De punto di sauce sa / factura - fac / 30711732272
-                        if records and not has_date:
+                        if len(records) > acct_start and not has_date:
                             records[-1][1] = records[-1][1] + " / " + detail
                             last_record_open = True
                             continue
@@ -231,7 +300,7 @@ def parse_pdf(file_bytes: bytes) -> pd.DataFrame:
                     not has_date
                     and pending_date is None
                     and last_record_open
-                    and records
+                    and len(records) > acct_start
                     and re.match(r"^(Responsable:|De |Por |Del )", line, re.IGNORECASE)
                 ):
                     detail = clean_text(line)
@@ -268,6 +337,7 @@ def parse_pdf(file_bytes: bytes) -> pd.DataFrame:
                         desc=desc_final,
                         saldo=saldo,
                         prev_saldo=prev_saldo,
+                        cuenta=current_account,
                     )
                     last_record_open = True
 
@@ -277,12 +347,23 @@ def parse_pdf(file_bytes: bytes) -> pd.DataFrame:
             if stopped:
                 break
 
-    df = pd.DataFrame(
-        records,
-        columns=["Fecha", "Descripción", "Débito", "Crédito", "Saldo"],
-    )
+    # Cuentas sin movimientos en el período: una fila informativa con el
+    # saldo, para que igual aparezca su hoja en el Excel.
+    with_movs = {r[5] for r in records}
+    for cta in account_order:
+        if cta not in with_movs and cta in acct_info:
+            fecha_ini, saldo_ini = acct_info[cta]
+            records.append([fecha_ini, "Sin movimientos en el período", 0.0, 0.0, round(saldo_ini, 2), cta])
+
+    cols = ["Fecha", "Descripción", "Débito", "Crédito", "Saldo", "Cuenta"]
+    df = pd.DataFrame(records, columns=cols)
 
     if not df.empty:
         df["Fecha"] = pd.to_datetime(df["Fecha"], format="%d/%m/%y", errors="coerce")
+        # Mantener el orden de las cuentas como vienen en el PDF
+        order = {c: i for i, c in enumerate(account_order)}
+        df["_o"] = df["Cuenta"].map(order).fillna(len(order))
+        df["_i"] = range(len(df))
+        df = df.sort_values(["_o", "_i"]).drop(columns=["_o", "_i"]).reset_index(drop=True)
 
-    return df[["Fecha", "Descripción", "Débito", "Crédito", "Saldo"]]
+    return df[cols]
