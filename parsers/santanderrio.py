@@ -6,6 +6,7 @@ import pandas as pd
 import pdfplumber
 
 
+
 DATE_START = re.compile(r"^\d{2}/\d{2}/\d{2}")
 MONEY_RE = re.compile(r"[−-]?\$?\s?\d{1,3}(?:\.\d{3})*,\d{2}-?")
 SALDO_INICIAL_RE = re.compile(r"saldo\s+inicial", re.IGNORECASE)
@@ -17,9 +18,10 @@ PERCENT_RE = re.compile(r"\d{1,3}(?:,\d+)?\s*%")
 
 # Líneas de detalle de retenciones/percepciones (SIRCREB, etc.):
 #   "Resp:30717568024 / 4,50% sobre $200.730,96"
+#   "Cta orig: 205-039065/9 - base impo. usd141,52"   (imp. 25.413 de la cta en dólares)
 # El monto que traen es la BASE de cálculo, no un saldo ni un movimiento.
 DETAIL_LINE_RE = re.compile(
-    r"^(?:\d{2}/\d{2}/\d{2}\s+)?(?:Resp(?:onsable)?\s*:|.*%\s*sobre\s*\$)",
+    r"^(?:\d{2}/\d{2}/\d{2}\s+)?(?:Resp(?:onsable)?\s*:|.*%\s*sobre\s*\$|Cta\.?\s*orig|.*base\s+impo)",
     re.IGNORECASE,
 )
 
@@ -28,7 +30,7 @@ DETAIL_LINE_RE = re.compile(
 #   "Cuenta Corriente Nº 205-009387/9 CBU: 0720205820000000938790"
 #   "Cuenta Corriente especial U$S Nº 205-020527/6 CBU: ..."
 ACCOUNT_HEADER_RE = re.compile(
-    r"^(?P<tipo>.+?)\s+N\s*[º°o]\.?\s*(?P<num>[\d\-/]+)\s+CBU",
+    r"^(?P<tipo>(?:Cuenta|Caja)\b.*?)\s+N\s*[º°o]\.?\s*(?P<num>\d{3}-[\d/]+)\s*(?:CBU|$)",
     re.IGNORECASE,
 )
 SECTION_PESOS_RE = re.compile(r"^\s*Movimientos en pesos", re.IGNORECASE)
@@ -60,6 +62,9 @@ def money_in(line: str):
     return MONEY_RE.findall(PERCENT_RE.sub(" ", line))
 
 EXCLUDE_TOKENS = (
+    "correlativo 800678",
+    "tampoco lo hacen otras entidades",
+    "Salvo error u omis",
     "Acuerdo:",
     "Vencimiento:",
     "Fecha Comprobante Movimiento",
@@ -68,8 +73,12 @@ EXCLUDE_TOKENS = (
 )
 
 
+# Encabezados de tabla y logo
+HEADER_LINE_RE = re.compile(r"^\W*(Fecha\s+Comprobante|Santander\W*$)", re.IGNORECASE)
+
+
 def is_header_summary(line: str) -> bool:
-    if PAGE_FOOTER_RE.match(line):
+    if PAGE_FOOTER_RE.match(line) or HEADER_LINE_RE.match(line):
         return True
     return any(tok in line for tok in EXCLUDE_TOKENS)
 
@@ -124,12 +133,18 @@ def to_number(s: str) -> float:
     return -v if neg else v
 
 
-def _append_record(records, fecha, desc, saldo, prev_saldo, cuenta=""):
+def _append_record(records, fecha, desc, saldo, prev_saldo, cuenta="", importe=None):
     if not fecha or not desc:
         return prev_saldo
 
     base = prev_saldo if prev_saldo is not None else saldo
     delta = round(saldo - base, 2)
+
+    # Control: el importe de la línea tiene que coincidir con la variación
+    # del saldo. Si no coincide (lectura dudosa del PDF), se marca
+    # el movimiento para revisarlo a mano.
+    if importe is not None and abs(abs(delta) - abs(importe)) > 0.01:
+        desc = f"{desc} [REVISAR: importe en PDF {abs(importe):,.2f}]".replace(",", "X").replace(".", ",").replace("X", ".")
 
     credito = max(delta, 0.0)
     debito = max(-delta, 0.0)
@@ -144,6 +159,20 @@ def _append_record(records, fecha, desc, saldo, prev_saldo, cuenta=""):
     ])
 
     return saldo
+
+
+# ---------- Lectura de páginas ----------
+def _page_texts(file_bytes: bytes):
+    """Texto de cada página. Los PDFs sin texto (imagen / impresos a PDF) no se procesan."""
+    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+        texts = [(pg.extract_text() or "") for pg in pdf.pages]
+
+    if sum(len(t.strip()) for t in texts) < 50:
+        raise ValueError(
+            "PDF no original: no tiene texto (es una imagen, un escaneo o fue "
+            "'impreso a PDF'). Descargá el resumen original desde el home banking."
+        )
+    return texts
 
 
 def parse_pdf(file_bytes: bytes) -> pd.DataFrame:
@@ -175,13 +204,10 @@ def parse_pdf(file_bytes: bytes) -> pd.DataFrame:
         if label not in account_order:
             account_order.append(label)
 
-    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-        # No saltar la primera página:
-        # en algunos Santander el Saldo Inicial y los movimientos arrancan en página 1.
-        pages = pdf.pages
-
-        for page in pages:
-            text = page.extract_text() or ""
+    # No saltar la primera página:
+    # en algunos Santander el Saldo Inicial y los movimientos arrancan en página 1.
+    if True:
+        for text in _page_texts(file_bytes):
 
             for raw in text.split("\n"):
                 line = raw.strip()
@@ -309,6 +335,7 @@ def parse_pdf(file_bytes: bytes) -> pd.DataFrame:
                     continue
 
                 saldo = to_number(nums[-1])
+                importe = to_number(nums[-2]) if len(nums) >= 2 else None
                 desc_line = clean_text(line)
 
                 if has_date:
@@ -338,6 +365,7 @@ def parse_pdf(file_bytes: bytes) -> pd.DataFrame:
                         saldo=saldo,
                         prev_saldo=prev_saldo,
                         cuenta=current_account,
+                        importe=importe,
                     )
                     last_record_open = True
 
