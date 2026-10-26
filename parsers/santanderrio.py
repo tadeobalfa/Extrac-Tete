@@ -12,6 +12,22 @@ SALDO_INICIAL_RE = re.compile(r"saldo\s+inicial", re.IGNORECASE)
 STOP_RE = re.compile(r"^\s*Saldo total(?! en cuentas)", re.IGNORECASE)
 PAGE_FOOTER_RE = re.compile(r"^\s*\d+\s*-\s*\d+\s*$")
 
+# Porcentajes tipo "4,50%" o "0,6 %": el regex de montos los confundía con importes.
+PERCENT_RE = re.compile(r"\d{1,3}(?:,\d+)?\s*%")
+
+# Líneas de detalle de retenciones/percepciones (SIRCREB, etc.):
+#   "Resp:30717568024 / 4,50% sobre $200.730,96"
+# El monto que traen es la BASE de cálculo, no un saldo ni un movimiento.
+DETAIL_LINE_RE = re.compile(
+    r"^(?:\d{2}/\d{2}/\d{2}\s+)?(?:Resp(?:onsable)?\s*:|.*%\s*sobre\s*\$)",
+    re.IGNORECASE,
+)
+
+
+def money_in(line: str):
+    """Montos de la línea, ignorando porcentajes."""
+    return MONEY_RE.findall(PERCENT_RE.sub(" ", line))
+
 EXCLUDE_TOKENS = (
     "Cuenta Corriente N°",
     "Cuenta Corriente Nº",
@@ -32,7 +48,14 @@ def is_header_summary(line: str) -> bool:
 
 def clean_text(line: str) -> str:
     t = line.strip()
+    # Proteger porcentajes ("0,6%") para que no los borre el regex de montos
+    pcts = []
+    def _keep(m):
+        pcts.append(m.group(0))
+        return f"\x00{len(pcts)-1}\x00"
+    t = PERCENT_RE.sub(_keep, t)
     t = MONEY_RE.sub("", t)
+    t = re.sub(r"\x00(\d+)\x00", lambda m: pcts[int(m.group(1))], t)
 
     if DATE_START.match(t):
         t = t[8:].strip()
@@ -133,7 +156,7 @@ def parse_pdf(file_bytes: bytes) -> pd.DataFrame:
                     continue
 
                 if SALDO_INICIAL_RE.search(line):
-                    nums = MONEY_RE.findall(line)
+                    nums = money_in(line)
                     if nums:
                         prev_saldo = to_number(nums[-1])
                         started = True
@@ -149,7 +172,21 @@ def parse_pdf(file_bytes: bytes) -> pd.DataFrame:
                 if not started:
                     continue
 
-                nums = MONEY_RE.findall(line)
+                # Detalle de retención (Resp: ... % sobre $base): siempre se
+                # agrega a la descripción del movimiento anterior. Nunca es un
+                # movimiento propio (antes generaba asientos inventados y
+                # rompía la cadena de saldos).
+                if DETAIL_LINE_RE.match(line):
+                    # Se conserva la base ("sobre $200.730,96") como referencia
+                    detail = re.sub(r"\s{2,}", " ", line[8:] if DATE_START.match(line) else line).strip()
+                    if records and detail:
+                        records[-1][1] = records[-1][1] + " / " + detail
+                    pending_date = None
+                    pending_desc_parts = []
+                    last_record_open = True
+                    continue
+
+                nums = money_in(line)
                 has_date = bool(DATE_START.match(line))
 
                 if has_date:
