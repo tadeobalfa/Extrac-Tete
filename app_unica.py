@@ -24,6 +24,7 @@ from parsers.macro2 import parse_pdf as parse_macro2
 from parsers.nacion import parse_pdf as parse_nacion
 from parsers.nacion2 import parse_pdf as parse_nacion2
 from parsers.patagonia import parse_pdf as parse_patagonia
+from parsers.patagonia2 import parse_pdf as parse_patagonia2
 from parsers.santanderrio import parse_pdf as parse_santanderrio
 from parsers.supervielle import parse_pdf as parse_supervielle
 from parsers.supervielle2 import parse_pdf as parse_supervielle2
@@ -565,6 +566,7 @@ BANK_FORMAT_IMAGES = {
     "BBVA": "bbva.png",
     "ICBC": "icbc.png",
     "PATAGONIA": "patagonia.png",
+    "PATAGONIA 2": "patagonia2.png",
     "SANTANDER RIO": "santander.png",
     "BRUBANK": "brubank.png",
 }
@@ -617,6 +619,7 @@ BANK_RULE_SHEETS = {
     "GALICIA": "GALICIA",
     "ICBC": "ICBC",
     "PATAGONIA": "PATAGONIA",
+    "PATAGONIA 2": "PATAGONIA",
     "MACRO": "MACRO",
     "MACRO 2": "MACRO 2",
     "NACION": "NACION",
@@ -635,6 +638,7 @@ BANK_SHEET_ALIASES = {
     "GALICIA": ["GALICIA", "BANCO GALICIA"],
     "ICBC": ["ICBC"],
     "PATAGONIA": ["PATAGONIA", "BANCO PATAGONIA"],
+    "PATAGONIA 2": ["PATAGONIA 2", "PATAGONIA2", "PATAGONIA", "BANCO PATAGONIA"],
     "MACRO": ["MACRO", "BANCO MACRO"],
     "MACRO 2": ["MACRO 2", "MACRO2", "BANCO MACRO 2"],
     "NACION": ["NACION", "BANCO NACION", "BANCO DE LA NACION ARGENTINA"],
@@ -653,6 +657,7 @@ BANK_CLASSIFICATION_FALLBACKS = {
     "SUPERVIELLE 2": ["SUPERVIELLE 2", "SUPERVIELLE"],
     "BRUBANK": ["BRUBANK"],
     "NACION 2": ["NACION 2", "NACION"],
+    "PATAGONIA 2": ["PATAGONIA 2", "PATAGONIA"],
 }
 
 def _norm_text(s: str) -> str:
@@ -867,10 +872,17 @@ def _apply_classification(df: pd.DataFrame, bank: str) -> pd.DataFrame:
             clasifs.append("")
             continue
 
+        desc_rules = str(row.get("Descripción", "") or "")
+        if bank == "PATAGONIA 2":
+            # Se clasifica solo por la descripción del banco, no por la
+            # referencia agregada ("DESCRIPCION - REFERENCIA"): un nombre como
+            # "OLIVA" no debe matchear la regla "IVA".
+            desc_rules = desc_rules.split(" - ", 1)[0]
+
         clasifs.append(
             _classify_row(
                 bank=bank,
-                descripcion=row.get("Descripción", ""),
+                descripcion=desc_rules,
                 debito=float(row.get("Débito", 0.0) or 0.0),
                 credito=float(row.get("Crédito", 0.0) or 0.0),
                 rules_pack=rules_pack,
@@ -1113,6 +1125,17 @@ def detect_bank(raw_bytes: bytes) -> Optional[str]:
     first_page = _extract_text_for_detection(raw_bytes, max_pages=1)
     if "BANCO SANTANDER ARGENTINA S.A." in first_page:
         return "SANTANDER RIO"
+
+    # Patagonia "Movimientos de Cuenta" (e-bank): no trae el nombre del banco
+    # en el texto, se reconoce por el encabezado. Va antes que el resto porque
+    # en la columna Referencia pueden aparecer otros bancos (BBVA, MERCADO PAGO...).
+    if (
+        "MOVIMIENTOS DE CUENTA" in first_page
+        and "TITULARIDAD:" in first_page
+        and "REFERENCIA" in first_page
+        and re.search(r"CUENTA:\s*C[CA]", first_page)
+    ):
+        return "PATAGONIA 2"
 
     if "BRUBANK" in txt and "MI CUENTA" in txt and "MOVIMIENTOS" in txt:
         return "BRUBANK"
@@ -1613,11 +1636,15 @@ def fix_bbva(df):
 def fix_brubank(df):
     return df
 
+def fix_patagonia2(df):
+    return df
+
 PARSERS: Dict[str, Callable[[bytes], pd.DataFrame]] = {
     "BANCOR": parse_bancor,
     "GALICIA": parse_galicia,
     "ICBC": parse_icbc,
     "PATAGONIA": parse_patagonia,
+    "PATAGONIA 2": parse_patagonia2,
     "MACRO": parse_macro,
     "MACRO 2": parse_macro2,
     "NACION": parse_nacion,
@@ -1636,6 +1663,7 @@ FIXES: Dict[str, Callable[[pd.DataFrame], pd.DataFrame]] = {
     "GALICIA": fix_galicia,
     "ICBC": fix_icbc,
     "PATAGONIA": fix_patagonia,
+    "PATAGONIA 2": fix_patagonia2,
     "MACRO": fix_macro,
     "MACRO 2": fix_macro2,
     "NACION": fix_nacion,
@@ -1649,7 +1677,7 @@ FIXES: Dict[str, Callable[[pd.DataFrame], pd.DataFrame]] = {
     "BRUBANK": fix_brubank,
 }
 
-MULTISHEET_BANKS = {"SUPERVIELLE", "BBVA", "PATAGONIA", "BRUBANK", "SANTANDER RIO"}
+MULTISHEET_BANKS = {"SUPERVIELLE", "BBVA", "PATAGONIA", "PATAGONIA 2", "BRUBANK", "SANTANDER RIO"}
 
 # ===== UI principal =====
 card = st.container()
@@ -2237,6 +2265,7 @@ if do_convert:
                 "GALICIA": 480,
                 "ICBC": 480,
                 "PATAGONIA": 420,
+                "PATAGONIA 2": 420,
                 "MACRO": 600,
                 "MACRO 2": 600,
                 "NACION": 480,
@@ -2256,6 +2285,7 @@ if do_convert:
                 "GALICIA": 240,
                 "ICBC": 240,
                 "PATAGONIA": 240,
+                "PATAGONIA 2": 240,
                 "MACRO": 300,
                 "MACRO 2": 300,
                 "NACION": 240,
