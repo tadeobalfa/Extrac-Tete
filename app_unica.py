@@ -1082,6 +1082,25 @@ def _extract_text_for_detection(raw_bytes: bytes, max_pages: int = 3) -> str:
         return ""
     return "\n".join(parts).upper()
 
+# ===== Control de PDF original =====
+NOT_ORIGINAL_MSG = (
+    "PDF no original: no tiene texto (es una imagen, un escaneo o fue "
+    "'impreso a PDF'). Descargá el resumen original desde el home banking."
+)
+
+def _pdf_has_text(raw_bytes: bytes, min_chars: int = 50) -> bool:
+    """True si el PDF tiene texto real. Los PDFs imagen no se procesan."""
+    try:
+        total = 0
+        with pdfplumber.open(io.BytesIO(raw_bytes)) as pdf:
+            for page in pdf.pages:
+                total += len((page.extract_text() or "").strip())
+                if total >= min_chars:
+                    return True
+    except Exception:
+        return True  # si no se puede abrir, que el error lo informe el lector
+    return False
+
 def detect_bank(raw_bytes: bytes) -> Optional[str]:
     txt = _extract_text_for_detection(raw_bytes, max_pages=3)
 
@@ -2112,6 +2131,13 @@ def _friendly_error_info(error_text: str):
             "solucion": "Verificá que openpyxl esté incluido en requirements.txt y que la app haya redeployado correctamente.",
         }
 
+    if "pdf no original" in e:
+        return {
+            "titulo": "PDF no original: no se puede procesar",
+            "causa": "El archivo no tiene texto: es una imagen, un escaneo, una foto o un resumen 'impreso a PDF' (por ejemplo con Microsoft Print to PDF).",
+            "solucion": "Descargá el resumen original desde el home banking y volvé a cargarlo. Los demás archivos se procesan normalmente si el Modo atómico está desactivado.",
+        }
+
     if "no se pudo detectar automáticamente el banco" in e:
         return {
             "titulo": "No se pudo detectar el banco automáticamente",
@@ -2167,6 +2193,11 @@ def _show_main_error(errors: List[str]):
     first_error = errors[0]
     info = _friendly_error_info(first_error)
 
+    if len(errors) == 1:
+        detalle = f"`{first_error}`"
+    else:
+        detalle = "\n" + "\n".join(f"- `{er}`" for er in errors)
+
     st.error(
         f"""**{info['titulo']}**
 
@@ -2174,7 +2205,7 @@ def _show_main_error(errors: List[str]):
 
 **Solución rápida:** {info['solucion']}
 
-**Detalle detectado:** `{first_error}`
+**Detalle detectado:** {detalle}
 
 Para ver más información técnica, revisá la pestaña **Registro**."""
     )
@@ -2299,6 +2330,9 @@ if do_convert:
                         sublabel=f"Procesando {idx}/{total_inputs}: {name}",
                     )
 
+                    if not _pdf_has_text(data):
+                        raise ValueError(NOT_ORIGINAL_MSG)
+
                     if bank == "AUTO":
                         provisional_bank = detect_bank(data)
                         if not provisional_bank:
@@ -2340,6 +2374,13 @@ if do_convert:
                 fut_map = {}
 
                 for name, data, _ in inputs:
+                    if not _pdf_has_text(data):
+                        errors.append(f"{name}: {NOT_ORIGINAL_MSG}")
+                        _log(f"✗ {name}: {NOT_ORIGINAL_MSG}")
+                        if atomic_mode:
+                            break
+                        continue
+
                     if bank == "AUTO":
                         provisional_bank = detect_bank(data)
                         if not provisional_bank:
