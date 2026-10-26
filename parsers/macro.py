@@ -1,5 +1,7 @@
 # parsers/macro.py
-# Banco Macro - "Resumen General" (una o varias cuentas en el mismo PDF).
+# Banco Macro - "Resumen General" (una o varias cuentas en el mismo PDF) y
+# extracto de una sola cuenta con cuadro "SALDO INICIAL CREDITOS DEBITOS ..."
+# (sin el título "DETALLE DE MOVIMIENTO").
 #
 # Estructura:
 #   CUENTA CORRIENTE ESPECIAL EN DOLARES NRO.: 2-325-0946481994-6
@@ -93,10 +95,13 @@ def parse_pdf(file_bytes: bytes) -> pd.DataFrame:
                 if current is None:
                     continue
 
-                if up.startswith("DETALLE DE MOVIMIENTO"):
+                # Inicio de la tabla: "DETALLE DE MOVIMIENTO" (resumen general) o
+                # directamente el encabezado "FECHA DESCRIPCION REFERENCIA ..."
+                # (formato de una sola cuenta, sin ese título).
+                if up.startswith("DETALLE DE MOVIMIENTO") or re.match(r"^FECHA\s+DESCRIPCION", up):
                     in_detail = True
                     continue
-                if not in_detail or up.startswith("FECHA "):
+                if not in_detail:
                     continue
 
                 if SALDO_INI_RE.match(up):
