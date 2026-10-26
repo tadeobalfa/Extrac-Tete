@@ -1137,6 +1137,13 @@ def detect_bank(raw_bytes: bytes) -> Optional[str]:
     ):
         return "PATAGONIA 2"
 
+    # Macro: CBU con código de banco 285 en "Clave Bancaria Uniforme para
+    # Debito Directo". Algunos extractos no traen "BANCO MACRO" en el texto.
+    if re.search(r"CLAVE BANCARIA UNIFORME PARA DEBITO DIRECTO:\s*285", txt):
+        if "NRO. DE REFERENCIA" in txt and "CAUSAL" in txt and "IMPORTE" in txt:
+            return "MACRO 2"
+        return "MACRO"
+
     if "BRUBANK" in txt and "MI CUENTA" in txt and "MOVIMIENTOS" in txt:
         return "BRUBANK"
     if "MERCADO PAGO" in txt or "MERCADOPAGO" in txt:
@@ -1677,7 +1684,7 @@ FIXES: Dict[str, Callable[[pd.DataFrame], pd.DataFrame]] = {
     "BRUBANK": fix_brubank,
 }
 
-MULTISHEET_BANKS = {"SUPERVIELLE", "BBVA", "PATAGONIA", "PATAGONIA 2", "BRUBANK", "SANTANDER RIO"}
+MULTISHEET_BANKS = {"SUPERVIELLE", "BBVA", "PATAGONIA", "PATAGONIA 2", "BRUBANK", "SANTANDER RIO", "MACRO"}
 
 # ===== UI principal =====
 card = st.container()
@@ -2554,11 +2561,14 @@ if do_convert:
                     )
                     st.stop()
 
-                # Santander: primero las cuentas en pesos, después las de dólares
-                # (y la vista previa muestra la cuenta en pesos)
-                if effective_bank == "SANTANDER RIO":
+                # Santander / Macro: primero las cuentas en pesos, después las de
+                # dólares; la vista previa muestra la cuenta con más movimientos.
+                if effective_bank in {"SANTANDER RIO", "MACRO"}:
                     sheet_order = sorted(account_map.keys(), key=lambda c: ("DOLARES" in c.upper(), c))
-                    first_sheet = sheet_order[0]
+                    first_sheet = max(
+                        sheet_order,
+                        key=lambda c: sum(len(ch) for ch in account_map[c]),
+                    )
                 else:
                     sheet_order = sorted(account_map.keys())
                     first_sheet = next(iter(account_map))
