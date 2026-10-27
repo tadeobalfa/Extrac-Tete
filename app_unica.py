@@ -1738,11 +1738,9 @@ with st.expander("Opciones avanzadas", expanded=False):
         value=True,
         help="Usa timeouts mayores, procesa secuencialmente y prioriza estabilidad en PDFs muy grandes."
     )
-    atomic_mode = st.toggle(
-        "Procesamiento atómico (si falla uno, no generar Excel)",
-        value=True,
-        help="Evita períodos salteados: si un archivo falla, se cancela toda la salida."
-    )
+    # (El antiguo "procesamiento atómico" se reemplazó por una consulta:
+    #  si falla algún PDF, la app avisa y pregunta si generar el Excel sin él.)
+    pass
 
 do_convert = st.button("🔄 Convertir a Excel", type="primary", use_container_width=True)
 card.markdown('</div>', unsafe_allow_html=True)
@@ -2170,7 +2168,7 @@ def _friendly_error_info(error_text: str):
         return {
             "titulo": "PDF no original: no se puede procesar",
             "causa": "El archivo no tiene texto: es una imagen, un escaneo, una foto o un resumen 'impreso a PDF' (por ejemplo con Microsoft Print to PDF).",
-            "solucion": "Descargá el resumen original desde el home banking y volvé a cargarlo. Los demás archivos se procesan normalmente si el Modo atómico está desactivado.",
+            "solucion": "Descargá el resumen original desde el home banking y volvé a cargarlo. Si cargaste varios archivos, la app te pregunta si querés el Excel sin ese.",
         }
 
     if "no se pudo detectar automáticamente el banco" in e:
@@ -2244,6 +2242,391 @@ def _show_main_error(errors: List[str]):
 
 Para ver más información técnica, revisá la pestaña **Registro**."""
     )
+
+# ===== Formato de las hojas del Excel =====
+def _format_sheet(writer, sheet_name: str, df_sheet: pd.DataFrame, effective_bank: str):
+    """Importes con separador de miles, encabezado fijo y filtros."""
+    wb = writer.book
+    ws = writer.sheets[sheet_name]
+
+    fmt_head = wb.add_format({"bold": True, "bg_color": "#D9E1F2", "border": 1, "valign": "vcenter"})
+    fmt_money = wb.add_format({"num_format": '#,##0.00;-#,##0.00;"-"'})   # el 0 se ve como "-"
+    fmt_saldo = wb.add_format({"num_format": "#,##0.00;-#,##0.00;0.00"})
+
+    if effective_bank == "SUPERVIELLE 2":
+        ws.set_column("A:A", 18, wb.add_format({"num_format": "dd/mm/yyyy hh:mm"}))
+    else:
+        ws.set_column("A:A", 12, wb.add_format({"num_format": "dd/mm/yyyy"}))
+
+    ws.set_column("B:B", 90)
+    ws.set_column("C:C", 28)
+    ws.set_column("D:E", 16, fmt_money)
+    ws.set_column("F:F", 18, fmt_saldo)
+
+    for col_idx, col_name in enumerate(df_sheet.columns):
+        ws.write(0, col_idx, col_name, fmt_head)
+
+    ws.freeze_panes(1, 0)                                      # encabezado fijo
+    last_row = max(len(df_sheet), 1)
+    ws.autofilter(0, 0, last_row, len(df_sheet.columns) - 1)   # filtros en el encabezado
+
+
+# ===== Control de meses faltantes / saldos que no empalman =====
+_MESES = ["", "enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
+          "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
+
+def _fmt_money_ar(v: float) -> str:
+    return f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+def _gap_warnings(sortable, effective_bank: str) -> List[str]:
+    """
+    Controla la continuidad entre los archivos cargados (ordenados por fecha):
+      - meses del calendario que no aparecen entre un archivo y el siguiente
+      - por cuenta: saldo final de un archivo distinto del saldo inicial del siguiente
+    """
+    check_saldo = effective_bank not in {"SUPERVIELLE 2", "NACION 2"}
+    files_span: List[dict] = []
+    per_account: Dict[str, List[dict]] = {}
+
+    for name, fin, _mind, _bank, _pages in sortable:
+        if fin is None or fin.empty:
+            continue
+        df = fin.copy()
+        if "Cuenta" not in df.columns:
+            df["Cuenta"] = "Extractos"
+        df = df[df["Fecha"].notna()]
+        desc = df["Descripción"].astype(str)
+        df = df[~desc.str.startswith("===")]
+        movs = df[~df["Descripción"].astype(str).str.startswith("Sin movimientos")]
+        if not movs.empty:
+            files_span.append({"name": name, "d0": movs["Fecha"].min(), "d1": movs["Fecha"].max()})
+
+        for cta, ch in df.groupby(df["Cuenta"].fillna("Extractos"), sort=False):
+            if ch.empty:
+                continue
+            ch = ch.assign(_i=range(len(ch))).sort_values(["Fecha", "_i"])
+            first, last = ch.iloc[0], ch.iloc[-1]
+            per_account.setdefault(str(cta), []).append({
+                "name": name,
+                "d0": first["Fecha"],
+                "open": round(float(first["Saldo"]) + float(first["Débito"]) - float(first["Crédito"]), 2),
+                "close": round(float(last["Saldo"]), 2),
+            })
+
+    msgs: List[str] = []
+
+    # 1) meses faltantes (por archivo)
+    files_span.sort(key=lambda f: f["d0"])
+    con_hueco = set()   # pares de archivos ya avisados por mes faltante
+    for prev, cur in zip(files_span[:-1], files_span[1:]):
+        m_prev = prev["d1"].year * 12 + prev["d1"].month
+        m_cur = cur["d0"].year * 12 + cur["d0"].month
+        faltan = []
+        for k in range(m_prev + 1, m_cur):
+            y, m = divmod(k - 1, 12)
+            faltan.append(f"{_MESES[m + 1]} {y}")
+        if faltan:
+            verbo = "Falta el mes" if len(faltan) == 1 else "Faltan los meses"
+            msgs.append(f"{verbo} {', '.join(faltan)} entre «{prev['name']}» y «{cur['name']}».")
+            con_hueco.add((prev["name"], cur["name"]))
+
+    # 2) saldos que no empalman (por cuenta)
+    if check_saldo:
+        multi = len(per_account) > 1
+        for cta, blocks in per_account.items():
+            blocks.sort(key=lambda b: b["d0"])
+            pref = f"[{cta}] " if multi else ""
+            for prev, cur in zip(blocks[:-1], blocks[1:]):
+                if (prev["name"], cur["name"]) in con_hueco:
+                    continue   # ya se avisó que falta un mes en el medio
+                if abs(prev["close"] - cur["open"]) > 0.01:
+                    msgs.append(
+                        f"{pref}No empalma: «{prev['name']}» termina con saldo {_fmt_money_ar(prev['close'])} "
+                        f"y «{cur['name']}» arranca con {_fmt_money_ar(cur['open'])}. "
+                        "Puede faltar un resumen o haber movimientos sin leer."
+                    )
+    return msgs
+
+def _render_gap_warnings(gap_msgs: List[str]):
+    if gap_msgs:
+        st.warning("**⚠️ Revisá la continuidad de los meses**\n\n" + "\n".join(f"- {m}" for m in gap_msgs))
+
+def _render_skipped_files(errors: List[str]):
+    if errors:
+        st.error(
+            "**Este Excel NO incluye estos archivos** (no se pudieron procesar):\n\n"
+            + "\n".join(f"- {e}" for e in errors)
+        )
+
+
+# ===== Archivos con error: preguntar si se genera el Excel sin ellos =====
+def _render_pending_panel():
+    pend = st.session_state.get("ext_pending")
+    if not pend:
+        return
+
+    nombres = [e.split(": ", 1)[0] for e in pend["errors"]]
+    ok = len(pend["items"])
+
+    with tab_prev:
+        ph = st.empty()
+        with ph.container():
+            st.warning(
+                f"**No se pudo procesar {len(nombres)} de {ok + len(nombres)} archivos:**\n\n"
+                + "\n".join(f"- {e}" for e in pend["errors"])
+                + f"\n\n¿Querés generar el Excel igual, solo con los {ok} archivo(s) que sí se procesaron?"
+            )
+            c1, c2 = st.columns(2)
+            si = c1.button("✅ Sí, generar Excel sin esos archivos", type="primary",
+                           use_container_width=True, key="ext_pending_yes")
+            no = c2.button("✖ No, cancelar", use_container_width=True, key="ext_pending_no")
+
+    if si or no:
+        ph.empty()   # se saca la pregunta una vez respondida
+
+    if no:
+        st.session_state.pop("ext_pending", None)
+        tab_prev.info("Cancelado. Corregí o reemplazá los archivos y volvé a convertir.")
+        _add_history_entry(
+            bank_selected=pend["bank"], effective_bank=pend["bank"],
+            files_names=[it[0] for it in pend["items"]] + nombres,
+            status="CANCELADO", rows_count=0, output_name="-",
+        )
+    elif si:
+        st.session_state.pop("ext_pending", None)
+        _build_output(pend["items"], pend["errors"], pend["bank"], pend["add_blank"],
+                      st.empty(), pend["total_inputs"])
+
+
+def _build_output(items, errors, bank, add_blank, progress_box, total_inputs):
+    """Arma la vista previa y el Excel con los PDFs procesados OK.
+    `errors` son los archivos que no se pudieron procesar (se informan)."""
+    _render_progress(
+        progress_box,
+        current=total_inputs,
+        total=total_inputs,
+        label="Finalizando",
+        sublabel="Armando vista previa y archivo Excel...",
+    )
+
+    sortable = []
+    for name, fin, mind, detected_bank, pages in items:
+        if pd.isna(mind):
+            y, m = _infer_period_from_filename(name)
+            if y and m:
+                mind = pd.Timestamp(year=y, month=m, day=1)
+        sortable.append((name, fin, mind, detected_bank, pages))
+
+    def _key(t):
+        name, fin, mind, detected_bank, pages = t
+        has = 0 if (isinstance(mind, pd.Timestamp) and not pd.isna(mind)) else 1
+        return (has, mind if not pd.isna(mind) else pd.Timestamp.max, name.lower())
+
+    sortable.sort(key=_key)
+
+    if bank == "AUTO":
+        detected_banks = sorted(set(db for _, _, _, db, _ in sortable))
+        if len(detected_banks) > 1:
+            st.error(
+                "Se detectaron múltiples bancos en la misma carga: "
+                + ", ".join(detected_banks)
+                + ". En esta versión, cargá juntos solo PDFs del mismo banco."
+            )
+            st.stop()
+
+    effective_bank = sortable[0][3] if bank == "AUTO" else bank
+
+    gap_msgs = _gap_warnings(sortable, effective_bank)
+    for gm in gap_msgs:
+        _log(f"⚠ {gm}")
+
+    if effective_bank in MULTISHEET_BANKS:
+        account_map: Dict[str, List[pd.DataFrame]] = {}
+        empty_files: List[str] = []
+
+        for name, fin, _mind, _detected_bank, _pages in sortable:
+            # Un PDF sin movimientos leídos no debe crear una hoja
+            # "GENERAL" vacía: se avisa en pantalla y se saltea.
+            if fin is None or fin.empty:
+                empty_files.append(name)
+                _log(f"⚠ {name}: no se encontraron movimientos")
+                continue
+
+            if "Cuenta" in fin.columns:
+                for cta, chunk in fin.groupby(fin["Cuenta"].fillna("GENERAL"), sort=False):
+                    chunk = chunk.drop(columns=[c for c in ["Cuenta"] if c in chunk.columns])
+                    chunk = _ensure_columns_for_export(chunk)
+                    account_map.setdefault(str(cta), []).append(chunk[EXPECTED_COLS])
+            else:
+                fin = _ensure_columns_for_export(fin)
+                account_map.setdefault("GENERAL", []).append(fin[EXPECTED_COLS])
+
+            if add_blank:
+                blank = pd.DataFrame(
+                    [[pd.NaT, "", "", 0.0, 0.0, 0.0]],
+                    columns=EXPECTED_COLS,
+                )
+                for cta in list(account_map.keys()):
+                    account_map[cta].append(blank)
+
+        if not account_map:
+            st.error(
+                "No se encontraron movimientos en ninguno de los PDFs cargados: "
+                + ", ".join(empty_files)
+            )
+            st.stop()
+
+        # Santander / Macro: primero las cuentas en pesos, después las de
+        # dólares; la vista previa muestra la cuenta con más movimientos.
+        if effective_bank in {"SANTANDER RIO", "MACRO"}:
+            sheet_order = sorted(account_map.keys(), key=lambda c: ("DOLARES" in c.upper(), c))
+            first_sheet = max(
+                sheet_order,
+                key=lambda c: sum(len(ch) for ch in account_map[c]),
+            )
+        else:
+            sheet_order = sorted(account_map.keys())
+            first_sheet = next(iter(account_map))
+        result_preview = _append_blocks(account_map[first_sheet])
+
+        buf = io.BytesIO()
+        with pd.ExcelWriter(buf, engine="xlsxwriter", datetime_format="dd/mm/yyyy") as writer:
+            for cta in sheet_order:
+                df_sheet = _append_blocks(account_map[cta])
+                sheet_name = str(cta)[:31]
+                df_sheet.to_excel(writer, index=False, sheet_name=sheet_name)
+
+                _format_sheet(writer, sheet_name, df_sheet, effective_bank)
+
+        excel_name = f"EXTRACTOS_{effective_bank}.xlsx"
+
+        first_name, _first_fin, _first_mind, _first_detected_bank, first_pages = sortable[0]
+        summary, alerts_df = _validate_result_df(
+            result_preview,
+            bank=effective_bank,
+            source_name=first_name,
+            expected_pages=first_pages,
+        )
+
+        summary_data = _build_summary_data(
+            result_preview,
+            bank=effective_bank,
+            files_count=len(sortable),
+            summary_validation=summary,
+        )
+
+        with tab_prev:
+            _render_gap_warnings(gap_msgs)
+            _render_skipped_files(errors)
+
+            if empty_files:
+                st.warning(
+                    "No se encontraron movimientos en: "
+                    + ", ".join(empty_files)
+                    + ". Revisá que sean resúmenes del banco elegido; "
+                    "si lo son, mandá el PDF para ajustar el lector."
+                )
+
+            _render_summary_panel(summary_data)
+
+            st.download_button(
+                "⬇️ Descargar Excel (NUMÉRICO, múltiples hojas por cuenta)",
+                data=buf.getvalue(),
+                file_name=excel_name,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+
+            _render_validation_panel(summary, alerts_df)
+
+            st.subheader(f"Vista previa (hoja: {first_sheet})")
+            st.dataframe(result_preview, use_container_width=True, height=480)
+
+        total_rows = sum(len(_append_blocks(account_map[cta])) for cta in account_map.keys())
+
+        _add_history_entry(
+            bank_selected=bank,
+            effective_bank=effective_bank,
+            files_names=[name for name, _, _, _, _ in sortable],
+            status="OK",
+            rows_count=total_rows,
+            output_name=excel_name,
+        )
+
+    else:
+        chunks = []
+
+        for name, fin, _mind, _detected_bank, _pages in sortable:
+            chunks.append(fin[EXPECTED_COLS])
+
+            if add_blank:
+                chunks.append(
+                    pd.DataFrame(
+                        [[pd.NaT, "", "", 0.0, 0.0, 0.0]],
+                        columns=EXPECTED_COLS,
+                    )
+                )
+
+        result = _append_blocks(chunks)
+
+        buf = io.BytesIO()
+        with pd.ExcelWriter(buf, engine="xlsxwriter", datetime_format="dd/mm/yyyy") as writer:
+            result.to_excel(writer, index=False, sheet_name="Extractos")
+
+            _format_sheet(writer, "Extractos", result, effective_bank)
+
+        excel_name = f"EXTRACTOS_{effective_bank}.xlsx"
+
+        first_name, _first_fin, _first_mind, _first_detected_bank, first_pages = sortable[0]
+        summary, alerts_df = _validate_result_df(
+            result,
+            bank=effective_bank,
+            source_name=first_name,
+            expected_pages=first_pages,
+        )
+
+        summary_data = _build_summary_data(
+            result,
+            bank=effective_bank,
+            files_count=len(sortable),
+            summary_validation=summary,
+        )
+
+        with tab_prev:
+            _render_gap_warnings(gap_msgs)
+            _render_skipped_files(errors)
+            _render_summary_panel(summary_data)
+
+            st.download_button(
+                "⬇️ Descargar Excel (NUMÉRICO)",
+                data=buf.getvalue(),
+                file_name=excel_name,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+
+            _render_validation_panel(summary, alerts_df)
+
+            st.subheader("Vista previa")
+            st.dataframe(result, use_container_width=True, height=480)
+
+        _add_history_entry(
+            bank_selected=bank,
+            effective_bank=effective_bank,
+            files_names=[name for name, _, _, _, _ in sortable],
+            status="OK",
+            rows_count=len(result),
+            output_name=excel_name,
+        )
+
+
+
+if do_convert:
+    # una conversión nueva descarta una consulta pendiente anterior
+    st.session_state.pop("ext_pending", None)
+
+if not do_convert and st.session_state.get("ext_pending"):
+    _render_pending_panel()
 
 if do_convert:
     if not files:
@@ -2394,16 +2777,10 @@ if do_convert:
                     msg = f"{name}: tiempo de procesamiento excedido"
                     errors.append(msg)
                     _log(f"✗ {msg}")
-                    if atomic_mode:
-                        items = []
-                        break
                 except Exception as e:
                     msg = f"{name}: {e}"
                     errors.append(msg)
                     _log(f"✗ {msg}")
-                    if atomic_mode:
-                        items = []
-                        break
         else:
             from concurrent.futures import TimeoutError as TE
 
@@ -2414,8 +2791,6 @@ if do_convert:
                     if not _pdf_has_text(data):
                         errors.append(f"{name}: {NOT_ORIGINAL_MSG}")
                         _log(f"✗ {name}: {NOT_ORIGINAL_MSG}")
-                        if atomic_mode:
-                            break
                         continue
 
                     if bank == "AUTO":
@@ -2423,8 +2798,6 @@ if do_convert:
                         if not provisional_bank:
                             errors.append(f"{name}: No se pudo detectar automáticamente el banco")
                             _log(f"✗ {name}: No se pudo detectar automáticamente el banco")
-                            if atomic_mode:
-                                break
                             continue
                         timeout_sec = timeouts.get(provisional_bank, 300 if not long_mode else 600)
                     else:
@@ -2453,18 +2826,12 @@ if do_convert:
                         msg = f"{name}: tiempo de procesamiento excedido"
                         errors.append(msg)
                         _log(f"✗ {msg}")
-                        if atomic_mode:
-                            failed = True
-                            break
                     except Exception as e:
                         msg = f"{name}: {e}"
                         errors.append(msg)
                         _log(f"✗ {msg}")
-                        if atomic_mode:
-                            failed = True
-                            break
 
-            if not (atomic_mode and failed):
+            if True:
                 for name, _data, _ in inputs:
                     if name in tmp:
                         fin, detected_bank, pages = tmp[name]
@@ -2474,9 +2841,9 @@ if do_convert:
         if errors:
             _show_main_error(errors)
 
-        if errors and atomic_mode:
+        if errors and not items:
             progress_box.empty()
-            tab_log.error("Se canceló la generación del Excel (modo atómico activo).")
+            tab_log.error("No se pudo procesar ningún archivo: no se generó el Excel.")
             for e in errors:
                 tab_log.write("• " + e)
 
@@ -2489,235 +2856,20 @@ if do_convert:
                 output_name="-",
             )
 
+        elif errors and items:
+            # Algunos PDFs fallaron y otros no: se pregunta antes de armar el Excel
+            progress_box.empty()
+            st.session_state["ext_pending"] = {
+                "items": items,
+                "errors": errors,
+                "bank": bank,
+                "add_blank": add_blank,
+                "total_inputs": total_inputs,
+            }
+            _render_pending_panel()
+
         elif items:
-            _render_progress(
-                progress_box,
-                current=total_inputs,
-                total=total_inputs,
-                label="Finalizando",
-                sublabel="Armando vista previa y archivo Excel...",
-            )
-
-            sortable = []
-            for name, fin, mind, detected_bank, pages in items:
-                if pd.isna(mind):
-                    y, m = _infer_period_from_filename(name)
-                    if y and m:
-                        mind = pd.Timestamp(year=y, month=m, day=1)
-                sortable.append((name, fin, mind, detected_bank, pages))
-
-            def _key(t):
-                name, fin, mind, detected_bank, pages = t
-                has = 0 if (isinstance(mind, pd.Timestamp) and not pd.isna(mind)) else 1
-                return (has, mind if not pd.isna(mind) else pd.Timestamp.max, name.lower())
-
-            sortable.sort(key=_key)
-
-            if bank == "AUTO":
-                detected_banks = sorted(set(db for _, _, _, db, _ in sortable))
-                if len(detected_banks) > 1:
-                    st.error(
-                        "Se detectaron múltiples bancos en la misma carga: "
-                        + ", ".join(detected_banks)
-                        + ". En esta versión, cargá juntos solo PDFs del mismo banco."
-                    )
-                    st.stop()
-
-            effective_bank = sortable[0][3] if bank == "AUTO" else bank
-
-            if effective_bank in MULTISHEET_BANKS:
-                account_map: Dict[str, List[pd.DataFrame]] = {}
-                empty_files: List[str] = []
-
-                for name, fin, _mind, _detected_bank, _pages in sortable:
-                    # Un PDF sin movimientos leídos no debe crear una hoja
-                    # "GENERAL" vacía: se avisa en pantalla y se saltea.
-                    if fin is None or fin.empty:
-                        empty_files.append(name)
-                        _log(f"⚠ {name}: no se encontraron movimientos")
-                        continue
-
-                    if "Cuenta" in fin.columns:
-                        for cta, chunk in fin.groupby(fin["Cuenta"].fillna("GENERAL"), sort=False):
-                            chunk = chunk.drop(columns=[c for c in ["Cuenta"] if c in chunk.columns])
-                            chunk = _ensure_columns_for_export(chunk)
-                            account_map.setdefault(str(cta), []).append(chunk[EXPECTED_COLS])
-                    else:
-                        fin = _ensure_columns_for_export(fin)
-                        account_map.setdefault("GENERAL", []).append(fin[EXPECTED_COLS])
-
-                    if add_blank:
-                        blank = pd.DataFrame(
-                            [[pd.NaT, "", "", 0.0, 0.0, 0.0]],
-                            columns=EXPECTED_COLS,
-                        )
-                        for cta in list(account_map.keys()):
-                            account_map[cta].append(blank)
-
-                if not account_map:
-                    st.error(
-                        "No se encontraron movimientos en ninguno de los PDFs cargados: "
-                        + ", ".join(empty_files)
-                    )
-                    st.stop()
-
-                # Santander / Macro: primero las cuentas en pesos, después las de
-                # dólares; la vista previa muestra la cuenta con más movimientos.
-                if effective_bank in {"SANTANDER RIO", "MACRO"}:
-                    sheet_order = sorted(account_map.keys(), key=lambda c: ("DOLARES" in c.upper(), c))
-                    first_sheet = max(
-                        sheet_order,
-                        key=lambda c: sum(len(ch) for ch in account_map[c]),
-                    )
-                else:
-                    sheet_order = sorted(account_map.keys())
-                    first_sheet = next(iter(account_map))
-                result_preview = _append_blocks(account_map[first_sheet])
-
-                buf = io.BytesIO()
-                with pd.ExcelWriter(buf, engine="xlsxwriter", datetime_format="dd/mm/yyyy") as writer:
-                    for cta in sheet_order:
-                        df_sheet = _append_blocks(account_map[cta])
-                        sheet_name = str(cta)[:31]
-                        df_sheet.to_excel(writer, index=False, sheet_name=sheet_name)
-
-                        wb = writer.book
-                        ws = writer.sheets[sheet_name]
-
-                        if effective_bank == "SUPERVIELLE 2":
-                            ws.set_column("A:A", 18, wb.add_format({"num_format": "dd/mm/yyyy hh:mm"}))
-                        else:
-                            ws.set_column("A:A", 12, wb.add_format({"num_format": "dd/mm/yyyy"}))
-
-                        ws.set_column("B:B", 90)
-                        ws.set_column("C:C", 28)
-                        ws.set_column("D:F", 16, wb.add_format({"num_format": "0.00"}))
-
-                excel_name = f"EXTRACTOS_{effective_bank}.xlsx"
-
-                first_name, _first_fin, _first_mind, _first_detected_bank, first_pages = sortable[0]
-                summary, alerts_df = _validate_result_df(
-                    result_preview,
-                    bank=effective_bank,
-                    source_name=first_name,
-                    expected_pages=first_pages,
-                )
-
-                summary_data = _build_summary_data(
-                    result_preview,
-                    bank=effective_bank,
-                    files_count=len(sortable),
-                    summary_validation=summary,
-                )
-
-                with tab_prev:
-                    if empty_files:
-                        st.warning(
-                            "No se encontraron movimientos en: "
-                            + ", ".join(empty_files)
-                            + ". Revisá que sean resúmenes del banco elegido; "
-                            "si lo son, mandá el PDF para ajustar el lector."
-                        )
-
-                    _render_summary_panel(summary_data)
-
-                    st.download_button(
-                        "⬇️ Descargar Excel (NUMÉRICO, múltiples hojas por cuenta)",
-                        data=buf.getvalue(),
-                        file_name=excel_name,
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True,
-                    )
-
-                    _render_validation_panel(summary, alerts_df)
-
-                    st.subheader(f"Vista previa (hoja: {first_sheet})")
-                    st.dataframe(result_preview, use_container_width=True, height=480)
-
-                total_rows = sum(len(_append_blocks(account_map[cta])) for cta in account_map.keys())
-
-                _add_history_entry(
-                    bank_selected=bank,
-                    effective_bank=effective_bank,
-                    files_names=[name for name, _, _, _, _ in sortable],
-                    status="OK",
-                    rows_count=total_rows,
-                    output_name=excel_name,
-                )
-
-            else:
-                chunks = []
-
-                for name, fin, _mind, _detected_bank, _pages in sortable:
-                    chunks.append(fin[EXPECTED_COLS])
-
-                    if add_blank:
-                        chunks.append(
-                            pd.DataFrame(
-                                [[pd.NaT, "", "", 0.0, 0.0, 0.0]],
-                                columns=EXPECTED_COLS,
-                            )
-                        )
-
-                result = _append_blocks(chunks)
-
-                buf = io.BytesIO()
-                with pd.ExcelWriter(buf, engine="xlsxwriter", datetime_format="dd/mm/yyyy") as writer:
-                    result.to_excel(writer, index=False, sheet_name="Extractos")
-
-                    wb = writer.book
-                    ws = writer.sheets["Extractos"]
-
-                    if effective_bank == "SUPERVIELLE 2":
-                        ws.set_column("A:A", 18, wb.add_format({"num_format": "dd/mm/yyyy hh:mm"}))
-                    else:
-                        ws.set_column("A:A", 12, wb.add_format({"num_format": "dd/mm/yyyy"}))
-
-                    ws.set_column("B:B", 90)
-                    ws.set_column("C:C", 28)
-                    ws.set_column("D:F", 16, wb.add_format({"num_format": "0.00"}))
-
-                excel_name = f"EXTRACTOS_{effective_bank}.xlsx"
-
-                first_name, _first_fin, _first_mind, _first_detected_bank, first_pages = sortable[0]
-                summary, alerts_df = _validate_result_df(
-                    result,
-                    bank=effective_bank,
-                    source_name=first_name,
-                    expected_pages=first_pages,
-                )
-
-                summary_data = _build_summary_data(
-                    result,
-                    bank=effective_bank,
-                    files_count=len(sortable),
-                    summary_validation=summary,
-                )
-
-                with tab_prev:
-                    _render_summary_panel(summary_data)
-
-                    st.download_button(
-                        "⬇️ Descargar Excel (NUMÉRICO)",
-                        data=buf.getvalue(),
-                        file_name=excel_name,
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True,
-                    )
-
-                    _render_validation_panel(summary, alerts_df)
-
-                    st.subheader("Vista previa")
-                    st.dataframe(result, use_container_width=True, height=480)
-
-                _add_history_entry(
-                    bank_selected=bank,
-                    effective_bank=effective_bank,
-                    files_names=[name for name, _, _, _, _ in sortable],
-                    status="OK",
-                    rows_count=len(result),
-                    output_name=excel_name,
-                )
+            _build_output(items, errors, bank, add_blank, progress_box, total_inputs)
 
         with tab_log:
             if logs:
